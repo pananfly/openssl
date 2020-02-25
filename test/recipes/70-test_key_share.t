@@ -1,7 +1,7 @@
 #! /usr/bin/env perl
-# Copyright 2015-2016 The OpenSSL Project Authors. All Rights Reserved.
+# Copyright 2015-2018 The OpenSSL Project Authors. All Rights Reserved.
 #
-# Licensed under the OpenSSL license (the "License").  You may not use
+# Licensed under the Apache License 2.0 (the "License").  You may not use
 # this file except in compliance with the License.  You can obtain a copy
 # in the file LICENSE in the source distribution or at
 # https://www.openssl.org/source/license.html
@@ -36,7 +36,9 @@ use constant {
 
 use constant {
     X25519 => 0x1d,
-    P_256 => 0x17
+    P_256 => 0x17,
+    FFDHE2048 => 0x0100,
+    FFDHE3072 => 0x0101
 };
 
 my $testtype;
@@ -47,7 +49,7 @@ my $test_name = "test_key_share";
 setup($test_name);
 
 plan skip_all => "TLSProxy isn't usable on $^O"
-    if $^O =~ /^(VMS|MSWin32)$/;
+    if $^O =~ /^(VMS)$/;
 
 plan skip_all => "$test_name needs the dynamic engine feature enabled"
     if disabled("engine") || disabled("dynamic-engine");
@@ -74,7 +76,11 @@ my $proxy = TLSProxy::Proxy->new(
 $testtype = EMPTY_EXTENSION;
 $direction = CLIENT_TO_SERVER;
 $proxy->filter(\&modify_key_shares_filter);
-$proxy->serverflags("-curves P-256");
+if (disabled("ec")) {
+    $proxy->serverflags("-groups ffdhe3072");
+} else {
+    $proxy->serverflags("-groups P-256");
+}
 $proxy->start() or plan skip_all => "Unable to start up Proxy for tests";
 plan tests => 22;
 ok(TLSProxy::Message->success(), "Success after HRR");
@@ -95,31 +101,52 @@ ok(TLSProxy::Message->fail(), "Missing key_shares extension");
 #        HelloRetryRequest
 $proxy->clear();
 $proxy->filter(undef);
-$proxy->serverflags("-curves P-256");
+if (disabled("ec")) {
+    $proxy->serverflags("-groups ffdhe3072");
+} else {
+    $proxy->serverflags("-groups P-256");
+}
 $proxy->start();
 ok(TLSProxy::Message->success(), "No initial acceptable key_shares");
 
 #Test 5: No acceptable key_shares and no shared groups should fail
 $proxy->clear();
 $proxy->filter(undef);
-$proxy->serverflags("-curves P-256");
-$proxy->clientflags("-curves P-384");
+if (disabled("ec")) {
+    $proxy->serverflags("-groups ffdhe2048");
+} else {
+    $proxy->serverflags("-groups P-256");
+}
+if (disabled("ec")) {
+    $proxy->clientflags("-groups ffdhe3072");
+} else {
+    $proxy->clientflags("-groups P-384");
+}
 $proxy->start();
 ok(TLSProxy::Message->fail(), "No acceptable key_shares");
 
 #Test 6: A non preferred but acceptable key_share should succeed
 $proxy->clear();
 $proxy->clientflags("-curves P-256");
+if (disabled("ec")) {
+    $proxy->clientflags("-groups ffdhe3072");
+} else {
+    $proxy->clientflags("-groups P-256");
+}
 $proxy->start();
 ok(TLSProxy::Message->success(), "Non preferred key_share");
 $proxy->filter(\&modify_key_shares_filter);
 
-#Test 7: An acceptable key_share after a list of non-acceptable ones should
-#succeed
-$proxy->clear();
-$testtype = ACCEPTABLE_AT_END;
-$proxy->start();
-ok(TLSProxy::Message->success(), "Acceptable key_share at end of list");
+SKIP: {
+    skip "No ec support in this OpenSSL build", 1 if disabled("ec");
+
+    #Test 7: An acceptable key_share after a list of non-acceptable ones should
+    #succeed
+    $proxy->clear();
+    $testtype = ACCEPTABLE_AT_END;
+    $proxy->start();
+    ok(TLSProxy::Message->success(), "Acceptable key_share at end of list");
+}
 
 #Test 8: An acceptable key_share but for a group not in supported_groups should
 #fail
@@ -156,22 +183,45 @@ ok(TLSProxy::Message->fail(), "key_share list trailing data");
 $proxy->clear();
 $direction = SERVER_TO_CLIENT;
 $testtype = LOOK_ONLY;
-$proxy->clientflags("-curves P-256:X25519");
+$selectedgroupid = 0;
+if (disabled("ec")) {
+    $proxy->clientflags("-groups ffdhe3072:ffdhe2048");
+} else {
+    $proxy->clientflags("-groups P-256:X25519");
+}
 $proxy->start();
-ok(TLSProxy::Message->success() && ($selectedgroupid == P_256),
-   "Multiple acceptable key_shares");
+if (disabled("ec")) {
+    ok(TLSProxy::Message->success() && ($selectedgroupid == FFDHE3072),
+       "Multiple acceptable key_shares");
+} else {
+    ok(TLSProxy::Message->success() && ($selectedgroupid == P_256),
+       "Multiple acceptable key_shares");
+}
 
 #Test 14: Multiple acceptable key_shares - we choose the first one (part 2)
 $proxy->clear();
-$proxy->clientflags("-curves X25519:P-256");
+if (disabled("ec")) {
+    $proxy->clientflags("-curves ffdhe2048:ffdhe3072");
+} else {
+    $proxy->clientflags("-curves X25519:P-256");
+}
 $proxy->start();
-ok(TLSProxy::Message->success() && ($selectedgroupid == X25519),
-   "Multiple acceptable key_shares (part 2)");
+if (disabled("ec")) {
+    ok(TLSProxy::Message->success() && ($selectedgroupid == FFDHE2048),
+       "Multiple acceptable key_shares (part 2)");
+} else {
+    ok(TLSProxy::Message->success() && ($selectedgroupid == X25519),
+       "Multiple acceptable key_shares (part 2)");
+}
 
 #Test 15: Server sends key_share that wasn't offered should fail
 $proxy->clear();
 $testtype = SELECT_X25519;
-$proxy->clientflags("-curves P-256");
+if (disabled("ec")) {
+    $proxy->clientflags("-groups ffdhe3072");
+} else {
+    $proxy->clientflags("-groups P-256");
+}
 $proxy->start();
 ok(TLSProxy::Message->fail(), "Non offered key_share");
 
@@ -199,32 +249,41 @@ $testtype = TRAILING_DATA;
 $proxy->start();
 ok(TLSProxy::Message->fail(), "key_share trailing data in ServerHello");
 
-#Test 20: key_share should not be sent if the client is not capable of
-#         negotiating TLSv1.3
-$proxy->clear();
-$proxy->filter(undef);
-$proxy->clientflags("-no_tls1_3");
-$proxy->start();
-my $clienthello = $proxy->message_list->[0];
-ok(TLSProxy::Message->success()
-   && !defined $clienthello->extension_data->{TLSProxy::Message::EXT_KEY_SHARE},
-   "No key_share for TLS<=1.2 client");
-$proxy->filter(\&modify_key_shares_filter);
+SKIP: {
+    skip "No TLSv1.2 support in this OpenSSL build", 2 if disabled("tls1_2");
 
-#Test 21: A server not capable of negotiating TLSv1.3 should not attempt to
-#         process a key_share
-$proxy->clear();
-$direction = CLIENT_TO_SERVER;
-$testtype = NO_ACCEPTABLE_KEY_SHARES;
-$proxy->serverflags("-no_tls1_3");
-$proxy->start();
-ok(TLSProxy::Message->success(), "Ignore key_share for TLS<=1.2 server");
+    #Test 20: key_share should not be sent if the client is not capable of
+    #         negotiating TLSv1.3
+    $proxy->clear();
+    $proxy->filter(undef);
+    $proxy->clientflags("-no_tls1_3");
+    $proxy->start();
+    my $clienthello = $proxy->message_list->[0];
+    ok(TLSProxy::Message->success()
+       && !defined $clienthello->extension_data->{TLSProxy::Message::EXT_KEY_SHARE},
+       "No key_share for TLS<=1.2 client");
+    $proxy->filter(\&modify_key_shares_filter);
+
+    #Test 21: A server not capable of negotiating TLSv1.3 should not attempt to
+    #         process a key_share
+    $proxy->clear();
+    $direction = CLIENT_TO_SERVER;
+    $testtype = NO_ACCEPTABLE_KEY_SHARES;
+    $proxy->serverflags("-no_tls1_3");
+    $proxy->start();
+    ok(TLSProxy::Message->success(), "Ignore key_share for TLS<=1.2 server");
+}
 
 #Test 22: The server sending an HRR but not requesting a new key_share should
 #         fail
 $proxy->clear();
+$direction = SERVER_TO_CLIENT;
 $testtype = NO_KEY_SHARES_IN_HRR;
-$proxy->serverflags("-curves X25519");
+if (disabled("ec")) {
+    $proxy->serverflags("-groups ffdhe2048");
+} else {
+    $proxy->serverflags("-groups X25519");
+}
 $proxy->start();
 ok(TLSProxy::Message->fail(), "Server sends HRR with no key_shares");
 
@@ -341,6 +400,12 @@ sub modify_key_shares_filter
             if ($testtype == LOOK_ONLY) {
                 return;
             }
+            if ($testtype == NO_KEY_SHARES_IN_HRR) {
+                $message->delete_extension(TLSProxy::Message::EXT_KEY_SHARE);
+                $message->set_extension(TLSProxy::Message::EXT_UNKNOWN, "");
+                $message->repack();
+                return;
+            }
             if ($testtype == SELECT_X25519) {
                 $ext = pack "C4H64",
                     0x00, 0x1d, #x25519
@@ -370,12 +435,7 @@ sub modify_key_shares_filter
             $message->set_extension(TLSProxy::Message::EXT_KEY_SHARE, $ext);
 
             $message->repack();
-        } elsif ($message->mt == TLSProxy::Message::MT_HELLO_RETRY_REQUEST
-                 && $testtype == NO_KEY_SHARES_IN_HRR) {
-            $message->delete_extension(TLSProxy::Message::EXT_KEY_SHARE);
-            $message->set_extension(TLSProxy::Message::EXT_UNKNOWN, "");
-            $message->repack();
-         }
+        }
     }
 }
 

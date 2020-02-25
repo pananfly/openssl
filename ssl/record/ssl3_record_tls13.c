@@ -1,14 +1,14 @@
 /*
- * Copyright 2016 The OpenSSL Project Authors. All Rights Reserved.
+ * Copyright 2016-2018 The OpenSSL Project Authors. All Rights Reserved.
  *
- * Licensed under the OpenSSL license (the "License").  You may not use
+ * Licensed under the Apache License 2.0 (the "License").  You may not use
  * this file except in compliance with the License.  You can obtain a copy
  * in the file LICENSE in the source distribution or at
  * https://www.openssl.org/source/license.html
  */
 
-#include "../ssl_locl.h"
-#include "record_locl.h"
+#include "../ssl_local.h"
+#include "record_local.h"
 #include "internal/cryptlib.h"
 
 /*-
@@ -16,7 +16,7 @@
  * internal errors, but not otherwise.
  *
  * Returns:
- *    0: (in non-constant time) if the record is publically invalid (i.e. too
+ *    0: (in non-constant time) if the record is publicly invalid (i.e. too
  *        short etc).
  *    1: if the record encryption was successful.
  *   -1: if the record's AEAD-authenticator is invalid or, if sending,
@@ -25,13 +25,14 @@
 int tls13_enc(SSL *s, SSL3_RECORD *recs, size_t n_recs, int sending)
 {
     EVP_CIPHER_CTX *ctx;
-    unsigned char iv[EVP_MAX_IV_LENGTH];
-    size_t ivlen, taglen, offset, loop;
+    unsigned char iv[EVP_MAX_IV_LENGTH], recheader[SSL3_RT_HEADER_LENGTH];
+    size_t ivlen, taglen, offset, loop, hdrlen;
     unsigned char *staticiv;
     unsigned char *seq;
     int lenu, lenf;
     SSL3_RECORD *rec = &recs[0];
     uint32_t alg_enc;
+    WPACKET wpkt;
 
     if (n_recs != 1) {
         /* Should not happen */
@@ -51,7 +52,13 @@ int tls13_enc(SSL *s, SSL3_RECORD *recs, size_t n_recs, int sending)
         seq = RECORD_LAYER_get_read_sequence(&s->rlayer);
     }
 
-    if (ctx == NULL) {
+    /*
+     * If we're sending an alert and ctx != NULL then we must be forcing
+     * plaintext alerts. If we're reading and ctx != NULL then we allow
+     * plaintext alerts at certain points in the handshake. If we've got this
+     * far then we have already validated that a plaintext alert is ok here.
+     */
+    if (ctx == NULL || rec->type == SSL3_RT_ALERT) {
         memmove(rec->data, rec->input, rec->length);
         rec->input = rec->data;
         return 1;
@@ -77,12 +84,12 @@ int tls13_enc(SSL *s, SSL3_RECORD *recs, size_t n_recs, int sending)
          * To get here we must have selected a ciphersuite - otherwise ctx would
          * be NULL
          */
-        if (!ossl_assert(s->s3->tmp.new_cipher != NULL)) {
+        if (!ossl_assert(s->s3.tmp.new_cipher != NULL)) {
             SSLfatal(s, SSL_AD_INTERNAL_ERROR, SSL_F_TLS13_ENC,
                      ERR_R_INTERNAL_ERROR);
             return -1;
         }
-        alg_enc = s->s3->tmp.new_cipher->algorithm_enc;
+        alg_enc = s->s3.tmp.new_cipher->algorithm_enc;
     }
 
     if (alg_enc & SSL_AESCCM) {
@@ -143,7 +150,31 @@ int tls13_enc(SSL *s, SSL3_RECORD *recs, size_t n_recs, int sending)
     if (EVP_CipherInit_ex(ctx, NULL, NULL, NULL, iv, sending) <= 0
             || (!sending && EVP_CIPHER_CTX_ctrl(ctx, EVP_CTRL_AEAD_SET_TAG,
                                              taglen,
-                                             rec->data + rec->length) <= 0)
+                                             rec->data + rec->length) <= 0)) {
+        return -1;
+    }
+
+    /* Set up the AAD */
+    if (!WPACKET_init_static_len(&wpkt, recheader, sizeof(recheader), 0)
+            || !WPACKET_put_bytes_u8(&wpkt, rec->type)
+            || !WPACKET_put_bytes_u16(&wpkt, rec->rec_version)
+            || !WPACKET_put_bytes_u16(&wpkt, rec->length + taglen)
+            || !WPACKET_get_total_written(&wpkt, &hdrlen)
+            || hdrlen != SSL3_RT_HEADER_LENGTH
+            || !WPACKET_finish(&wpkt)) {
+        WPACKET_cleanup(&wpkt);
+        return -1;
+    }
+
+    /*
+     * For CCM we must explicitly set the total plaintext length before we add
+     * any AAD.
+     */
+    if (((alg_enc & SSL_AESCCM) != 0
+                 && EVP_CipherUpdate(ctx, NULL, &lenu, NULL,
+                                     (unsigned int)rec->length) <= 0)
+            || EVP_CipherUpdate(ctx, NULL, &lenu, recheader,
+                                sizeof(recheader)) <= 0
             || EVP_CipherUpdate(ctx, rec->data, &lenu, rec->input,
                                 (unsigned int)rec->length) <= 0
             || EVP_CipherFinal_ex(ctx, rec->data + lenu, &lenf) <= 0

@@ -1,22 +1,22 @@
 /*
- * Copyright 2008-2017 The OpenSSL Project Authors. All Rights Reserved.
+ * Copyright 2008-2018 The OpenSSL Project Authors. All Rights Reserved.
  *
- * Licensed under the OpenSSL license (the "License").  You may not use
+ * Licensed under the Apache License 2.0 (the "License").  You may not use
  * this file except in compliance with the License.  You can obtain a copy
  * in the file LICENSE in the source distribution or at
  * https://www.openssl.org/source/license.html
  */
 
 #include <stdio.h>
-#include "internal/ctype.h"
+#include "crypto/ctype.h"
 #include "internal/cryptlib.h"
 #include <openssl/rand.h>
 #include <openssl/x509.h>
 #include <openssl/asn1.h>
 #include <openssl/asn1t.h>
-#include "internal/evp_int.h"
+#include "crypto/evp.h"
 #include "internal/bio.h"
-#include "asn1_locl.h"
+#include "asn1_local.h"
 
 /*
  * Generalised MIME like utilities for streaming ASN1. Although many have a
@@ -64,6 +64,7 @@ static void mime_hdr_free(MIME_HEADER *hdr);
 
 /* Output an ASN1 structure in BER format streaming if necessary */
 
+/* unfortunately cannot constify this due to CMS_stream() and PKCS7_stream() */
 int i2d_ASN1_bio_stream(BIO *out, ASN1_VALUE *val, BIO *in, int flags,
                         const ASN1_ITEM *it)
 {
@@ -311,6 +312,7 @@ int SMIME_write_ASN1(BIO *bio, ASN1_VALUE *val, BIO *data, int flags,
 
 /* Handle output of ASN1 data */
 
+/* cannot constify val because of CMS_dataFinal() */
 static int asn1_output_data(BIO *out, BIO *data, ASN1_VALUE *val, int flags,
                             const ASN1_ITEM *it)
 {
@@ -397,7 +399,7 @@ ASN1_VALUE *SMIME_read_ASN1(BIO *bio, BIO **bcont, const ASN1_ITEM *it)
     if (strcmp(hdr->value, "multipart/signed") == 0) {
         /* Split into two parts */
         prm = mime_param_find(hdr, "boundary");
-        if (!prm || !prm->param_value) {
+        if (prm == NULL || prm->param_value == NULL) {
             sk_MIME_HEADER_pop_free(headers, mime_hdr_free);
             ASN1err(ASN1_F_SMIME_READ_ASN1, ASN1_R_NO_MULTIPART_BOUNDARY);
             return NULL;
@@ -425,6 +427,7 @@ ASN1_VALUE *SMIME_read_ASN1(BIO *bio, BIO **bcont, const ASN1_ITEM *it)
             || hdr->value == NULL) {
             sk_MIME_HEADER_pop_free(headers, mime_hdr_free);
             ASN1err(ASN1_F_SMIME_READ_ASN1, ASN1_R_NO_SIG_CONTENT_TYPE);
+            sk_BIO_pop_free(parts, BIO_vfree);
             return NULL;
         }
 
@@ -882,8 +885,6 @@ static MIME_HEADER *mime_hdr_find(STACK_OF(MIME_HEADER) *hdrs, const char *name)
     htmp.params = NULL;
 
     idx = sk_MIME_HEADER_find(hdrs, &htmp);
-    if (idx < 0)
-        return NULL;
     return sk_MIME_HEADER_value(hdrs, idx);
 }
 
@@ -895,8 +896,6 @@ static MIME_PARAM *mime_param_find(MIME_HEADER *hdr, const char *name)
     param.param_name = (char *)name;
     param.param_value = NULL;
     idx = sk_MIME_PARAM_find(hdr->params, &param);
-    if (idx < 0)
-        return NULL;
     return sk_MIME_PARAM_value(hdr->params, idx);
 }
 
@@ -952,12 +951,14 @@ static int strip_eol(char *linebuf, int *plen, int flags)
 
     for (p = linebuf + len - 1; len > 0; len--, p--) {
         c = *p;
-        if (c == '\n')
+        if (c == '\n') {
             is_eol = 1;
-        else if (is_eol && flags & SMIME_ASCIICRLF && c < 33)
+        } else if (is_eol && flags & SMIME_ASCIICRLF && c == 32) {
+            /* Strip trailing space on a line; 32 == ASCII for ' ' */
             continue;
-        else if (c != '\r')
+        } else if (c != '\r') {
             break;
+        }
     }
     *plen = len;
     return is_eol;

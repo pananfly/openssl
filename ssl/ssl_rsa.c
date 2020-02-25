@@ -1,15 +1,15 @@
 /*
- * Copyright 1995-2016 The OpenSSL Project Authors. All Rights Reserved.
+ * Copyright 1995-2018 The OpenSSL Project Authors. All Rights Reserved.
  *
- * Licensed under the OpenSSL license (the "License").  You may not use
+ * Licensed under the Apache License 2.0 (the "License").  You may not use
  * this file except in compliance with the License.  You can obtain a copy
  * in the file LICENSE in the source distribution or at
  * https://www.openssl.org/source/license.html
  */
 
 #include <stdio.h>
-#include "ssl_locl.h"
-#include "packet_locl.h"
+#include "ssl_local.h"
+#include "internal/packet.h"
 #include <openssl/bio.h>
 #include <openssl/objects.h>
 #include <openssl/evp.h>
@@ -914,8 +914,9 @@ int SSL_CTX_use_serverinfo_file(SSL_CTX *ctx, const char *file)
     long extension_length = 0;
     char *name = NULL;
     char *header = NULL;
-    char namePrefix1[] = "SERVERINFO FOR ";
-    char namePrefix2[] = "SERVERINFOV2 FOR ";
+    static const char namePrefix1[] = "SERVERINFO FOR ";
+    static const char namePrefix2[] = "SERVERINFOV2 FOR ";
+    unsigned int name_len;
     int ret = 0;
     BIO *bin = NULL;
     size_t num_extensions = 0, contextoff = 0;
@@ -951,19 +952,20 @@ int SSL_CTX_use_serverinfo_file(SSL_CTX *ctx, const char *file)
                 break;
         }
         /* Check that PEM name starts with "BEGIN SERVERINFO FOR " */
-        if (strlen(name) < strlen(namePrefix1)) {
+        name_len = strlen(name);
+        if (name_len < sizeof(namePrefix1) - 1) {
             SSLerr(SSL_F_SSL_CTX_USE_SERVERINFO_FILE, SSL_R_PEM_NAME_TOO_SHORT);
             goto end;
         }
-        if (strncmp(name, namePrefix1, strlen(namePrefix1)) == 0) {
+        if (strncmp(name, namePrefix1, sizeof(namePrefix1) - 1) == 0) {
             version = SSL_SERVERINFOV1;
         } else {
-            if (strlen(name) < strlen(namePrefix2)) {
+            if (name_len < sizeof(namePrefix2) - 1) {
                 SSLerr(SSL_F_SSL_CTX_USE_SERVERINFO_FILE,
                        SSL_R_PEM_NAME_TOO_SHORT);
                 goto end;
             }
-            if (strncmp(name, namePrefix2, strlen(namePrefix2)) != 0) {
+            if (strncmp(name, namePrefix2, sizeof(namePrefix2) - 1) != 0) {
                 SSLerr(SSL_F_SSL_CTX_USE_SERVERINFO_FILE,
                        SSL_R_PEM_NAME_BAD_PREFIX);
                 goto end;
@@ -1034,4 +1036,115 @@ int SSL_CTX_use_serverinfo_file(SSL_CTX *ctx, const char *file)
     OPENSSL_free(serverinfo);
     BIO_free(bin);
     return ret;
+}
+
+static int ssl_set_cert_and_key(SSL *ssl, SSL_CTX *ctx, X509 *x509, EVP_PKEY *privatekey,
+                                STACK_OF(X509) *chain, int override)
+{
+    int ret = 0;
+    size_t i;
+    int j;
+    int rv;
+    CERT *c = ssl != NULL ? ssl->cert : ctx->cert;
+    STACK_OF(X509) *dup_chain = NULL;
+    EVP_PKEY *pubkey = NULL;
+
+    /* Do all security checks before anything else */
+    rv = ssl_security_cert(ssl, ctx, x509, 0, 1);
+    if (rv != 1) {
+        SSLerr(SSL_F_SSL_SET_CERT_AND_KEY, rv);
+        goto out;
+    }
+    for (j = 0; j < sk_X509_num(chain); j++) {
+        rv = ssl_security_cert(ssl, ctx, sk_X509_value(chain, j), 0, 0);
+        if (rv != 1) {
+            SSLerr(SSL_F_SSL_SET_CERT_AND_KEY, rv);
+            goto out;
+        }
+    }
+
+    pubkey = X509_get_pubkey(x509); /* bumps reference */
+    if (pubkey == NULL)
+        goto out;
+    if (privatekey == NULL) {
+        privatekey = pubkey;
+    } else {
+        /* For RSA, which has no parameters, missing returns 0 */
+        if (EVP_PKEY_missing_parameters(privatekey)) {
+            if (EVP_PKEY_missing_parameters(pubkey)) {
+                /* nobody has parameters? - error */
+                SSLerr(SSL_F_SSL_SET_CERT_AND_KEY, SSL_R_MISSING_PARAMETERS);
+                goto out;
+            } else {
+                /* copy to privatekey from pubkey */
+                EVP_PKEY_copy_parameters(privatekey, pubkey);
+            }
+        } else if (EVP_PKEY_missing_parameters(pubkey)) {
+            /* copy to pubkey from privatekey */
+            EVP_PKEY_copy_parameters(pubkey, privatekey);
+        } /* else both have parameters */
+
+        /* Copied from ssl_set_cert/pkey */
+#ifndef OPENSSL_NO_RSA
+        if ((EVP_PKEY_id(privatekey) == EVP_PKEY_RSA) &&
+            ((RSA_flags(EVP_PKEY_get0_RSA(privatekey)) & RSA_METHOD_FLAG_NO_CHECK)))
+            /* no-op */ ;
+        else
+#endif
+        /* check that key <-> cert match */
+        if (EVP_PKEY_cmp(pubkey, privatekey) != 1) {
+            SSLerr(SSL_F_SSL_SET_CERT_AND_KEY, SSL_R_PRIVATE_KEY_MISMATCH);
+            goto out;
+        }
+    }
+    if (ssl_cert_lookup_by_pkey(pubkey, &i) == NULL) {
+        SSLerr(SSL_F_SSL_SET_CERT_AND_KEY, SSL_R_UNKNOWN_CERTIFICATE_TYPE);
+        goto out;
+    }
+
+    if (!override && (c->pkeys[i].x509 != NULL
+                      || c->pkeys[i].privatekey != NULL
+                      || c->pkeys[i].chain != NULL)) {
+        /* No override, and something already there */
+        SSLerr(SSL_F_SSL_SET_CERT_AND_KEY, SSL_R_NOT_REPLACING_CERTIFICATE);
+        goto out;
+    }
+
+    if (chain != NULL) {
+        dup_chain = X509_chain_up_ref(chain);
+        if  (dup_chain == NULL) {
+            SSLerr(SSL_F_SSL_SET_CERT_AND_KEY, ERR_R_MALLOC_FAILURE);
+            goto out;
+        }
+    }
+
+    sk_X509_pop_free(c->pkeys[i].chain, X509_free);
+    c->pkeys[i].chain = dup_chain;
+
+    X509_free(c->pkeys[i].x509);
+    X509_up_ref(x509);
+    c->pkeys[i].x509 = x509;
+
+    EVP_PKEY_free(c->pkeys[i].privatekey);
+    EVP_PKEY_up_ref(privatekey);
+    c->pkeys[i].privatekey = privatekey;
+
+    c->key = &(c->pkeys[i]);
+
+    ret = 1;
+ out:
+    EVP_PKEY_free(pubkey);
+    return ret;
+}
+
+int SSL_use_cert_and_key(SSL *ssl, X509 *x509, EVP_PKEY *privatekey,
+                         STACK_OF(X509) *chain, int override)
+{
+    return ssl_set_cert_and_key(ssl, NULL, x509, privatekey, chain, override);
+}
+
+int SSL_CTX_use_cert_and_key(SSL_CTX *ctx, X509 *x509, EVP_PKEY *privatekey,
+                             STACK_OF(X509) *chain, int override)
+{
+    return ssl_set_cert_and_key(NULL, ctx, x509, privatekey, chain, override);
 }

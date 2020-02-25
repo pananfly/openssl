@@ -2,14 +2,14 @@
  * Copyright 1995-2017 The OpenSSL Project Authors. All Rights Reserved.
  * Copyright 2005 Nokia. All rights reserved.
  *
- * Licensed under the OpenSSL license (the "License").  You may not use
+ * Licensed under the Apache License 2.0 (the "License").  You may not use
  * this file except in compliance with the License.  You can obtain a copy
  * in the file LICENSE in the source distribution or at
  * https://www.openssl.org/source/license.html
  */
 
 #include <stdio.h>
-#include "ssl_locl.h"
+#include "ssl_local.h"
 
 const char *SSL_state_string_long(const SSL *s)
 {
@@ -97,10 +97,6 @@ const char *SSL_state_string_long(const SSL *s)
         return "TLSv1.3 write server certificate verify";
     case TLS_ST_CR_HELLO_REQ:
         return "SSLv3/TLS read hello request";
-    case TLS_ST_SW_HELLO_RETRY_REQUEST:
-        return "TLSv1.3 write hello retry request";
-    case TLS_ST_CR_HELLO_RETRY_REQUEST:
-        return "TLSv1.3 read hello retry request";
     case TLS_ST_SW_KEY_UPDATE:
         return "TLSv1.3 write server key update";
     case TLS_ST_CW_KEY_UPDATE:
@@ -208,10 +204,6 @@ const char *SSL_state_string(const SSL *s)
         return "TRSCV";
     case TLS_ST_CR_HELLO_REQ:
         return "TRHR";
-    case TLS_ST_SW_HELLO_RETRY_REQUEST:
-        return "TWHRR";
-    case TLS_ST_CR_HELLO_RETRY_REQUEST:
-        return "TRHRR";
     case TLS_ST_SW_KEY_UPDATE:
         return "TWSKU";
     case TLS_ST_CW_KEY_UPDATE:

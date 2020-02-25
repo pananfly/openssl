@@ -1,7 +1,7 @@
 /*
- * Copyright 1995-2017 The OpenSSL Project Authors. All Rights Reserved.
+ * Copyright 1995-2018 The OpenSSL Project Authors. All Rights Reserved.
  *
- * Licensed under the OpenSSL license (the "License").  You may not use
+ * Licensed under the Apache License 2.0 (the "License").  You may not use
  * this file except in compliance with the License.  You can obtain a copy
  * in the file LICENSE in the source distribution or at
  * https://www.openssl.org/source/license.html
@@ -17,7 +17,7 @@
 #include <time.h>
 #include "internal/cryptlib.h"
 #include <openssl/bn.h>
-#include "rsa_locl.h"
+#include "rsa_local.h"
 
 static int rsa_builtin_keygen(RSA *rsa, int bits, int primes, BIGNUM *e_value,
                               BN_GENCB *cb);
@@ -41,6 +41,7 @@ int RSA_generate_key_ex(RSA *rsa, int bits, BIGNUM *e_value, BN_GENCB *cb)
 int RSA_generate_multi_prime_key(RSA *rsa, int bits, int primes,
                                  BIGNUM *e_value, BN_GENCB *cb)
 {
+#ifndef FIPS_MODE
     /* multi-prime is only supported with the builtin key generation */
     if (rsa->meth->rsa_multi_prime_keygen != NULL) {
         return rsa->meth->rsa_multi_prime_keygen(rsa, bits, primes,
@@ -57,13 +58,18 @@ int RSA_generate_multi_prime_key(RSA *rsa, int bits, int primes,
         else
             return 0;
     }
-
+#endif /* FIPS_MODE */
     return rsa_builtin_keygen(rsa, bits, primes, e_value, cb);
 }
 
 static int rsa_builtin_keygen(RSA *rsa, int bits, int primes, BIGNUM *e_value,
                               BN_GENCB *cb)
 {
+#ifdef FIPS_MODE
+    if (primes != 2)
+        return 0;
+    return rsa_sp800_56b_generate_key(rsa, bits, e_value, cb);
+#else
     BIGNUM *r0 = NULL, *r1 = NULL, *r2 = NULL, *tmp, *prime;
     int ok = -1, n = 0, bitsr[RSA_MAX_PRIME_NUM], bitse = 0;
     int i = 0, quo = 0, rmd = 0, adj = 0, retries = 0;
@@ -71,12 +77,9 @@ static int rsa_builtin_keygen(RSA *rsa, int bits, int primes, BIGNUM *e_value,
     STACK_OF(RSA_PRIME_INFO) *prime_infos = NULL;
     BN_CTX *ctx = NULL;
     BN_ULONG bitst = 0;
+    unsigned long error = 0;
 
-    /*
-     * When generating ridiculously small keys, we can get stuck
-     * continually regenerating the same prime values.
-     */
-    if (bits < 16) {
+    if (bits < RSA_MIN_MODULUS_BITS) {
         ok = 0;             /* we set our own err */
         RSAerr(RSA_F_RSA_BUILTIN_KEYGEN, RSA_R_KEY_SIZE_TOO_SMALL);
         goto err;
@@ -104,6 +107,8 @@ static int rsa_builtin_keygen(RSA *rsa, int bits, int primes, BIGNUM *e_value,
 
     for (i = 0; i < primes; i++)
         bitsr[i] = (i < rmd) ? quo + 1 : quo;
+
+    rsa->dirty_cnt++;
 
     /* We need the RSA components non-NULL */
     if (!rsa->n && ((rsa->n = BN_new()) == NULL))
@@ -160,6 +165,7 @@ static int rsa_builtin_keygen(RSA *rsa, int bits, int primes, BIGNUM *e_value,
             pinfo = sk_RSA_PRIME_INFO_value(prime_infos, i - 2);
             prime = pinfo->r;
         }
+        BN_set_flags(prime, BN_FLG_CONSTTIME);
 
         for (;;) {
  redo:
@@ -190,10 +196,20 @@ static int rsa_builtin_keygen(RSA *rsa, int bits, int primes, BIGNUM *e_value,
             }
             if (!BN_sub(r2, prime, BN_value_one()))
                 goto err;
-            if (!BN_gcd(r1, r2, rsa->e, ctx))
-                goto err;
-            if (BN_is_one(r1))
+            ERR_set_mark();
+            BN_set_flags(r2, BN_FLG_CONSTTIME);
+            if (BN_mod_inverse(r1, r2, rsa->e, ctx) != NULL) {
+               /* GCD == 1 since inverse exists */
                 break;
+            }
+            error = ERR_peek_last_error();
+            if (ERR_GET_LIB(error) == ERR_LIB_BN
+                && ERR_GET_REASON(error) == BN_R_NO_INVERSE) {
+                /* GCD != 1 */
+                ERR_pop_to_mark();
+            } else {
+                goto err;
+            }
             if (!BN_GENCB_call(cb, 2, n++))
                 goto err;
         }
@@ -242,7 +258,7 @@ static int rsa_builtin_keygen(RSA *rsa, int bits, int primes, BIGNUM *e_value,
              *
              * This strategy has the following goals:
              *
-             * 1. 1024-bit factors are effcient when using 3072 and 4096-bit key
+             * 1. 1024-bit factors are efficient when using 3072 and 4096-bit key
              * 2. stay the same logic with normal 2-prime key
              */
             bitse -= bitsr[i];
@@ -379,8 +395,8 @@ static int rsa_builtin_keygen(RSA *rsa, int bits, int primes, BIGNUM *e_value,
         RSAerr(RSA_F_RSA_BUILTIN_KEYGEN, ERR_LIB_BN);
         ok = 0;
     }
-    if (ctx != NULL)
-        BN_CTX_end(ctx);
+    BN_CTX_end(ctx);
     BN_CTX_free(ctx);
     return ok;
+#endif /* FIPS_MODE */
 }

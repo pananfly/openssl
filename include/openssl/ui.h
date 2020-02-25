@@ -1,27 +1,33 @@
 /*
- * Copyright 2001-2016 The OpenSSL Project Authors. All Rights Reserved.
+ * Copyright 2001-2018 The OpenSSL Project Authors. All Rights Reserved.
  *
- * Licensed under the OpenSSL license (the "License").  You may not use
+ * Licensed under the Apache License 2.0 (the "License").  You may not use
  * this file except in compliance with the License.  You can obtain a copy
  * in the file LICENSE in the source distribution or at
  * https://www.openssl.org/source/license.html
  */
 
-#ifndef HEADER_UI_H
-# define HEADER_UI_H
+#ifndef OPENSSL_UI_H
+# define OPENSSL_UI_H
+# pragma once
+
+# include <openssl/macros.h>
+# ifndef OPENSSL_NO_DEPRECATED_3_0
+#  define HEADER_UI_H
+# endif
 
 # include <openssl/opensslconf.h>
 
-# if OPENSSL_API_COMPAT < 0x10100000L
+# ifndef OPENSSL_NO_DEPRECATED_1_1_0
 #  include <openssl/crypto.h>
 # endif
 # include <openssl/safestack.h>
 # include <openssl/pem.h>
-# include <openssl/ossl_typ.h>
+# include <openssl/types.h>
 # include <openssl/uierr.h>
 
 /* For compatibility reasons, the macro OPENSSL_NO_UI is currently retained */
-# if OPENSSL_API_COMPAT < 0x10200000L
+# ifndef OPENSSL_NO_DEPRECATED_3_0
 #  ifdef OPENSSL_NO_UI_CONSOLE
 #   define OPENSSL_NO_UI
 #  endif
@@ -361,7 +367,6 @@ int UI_UTIL_read_pw(char *buf, char *buff, int size, const char *prompt,
                     int verify);
 UI_METHOD *UI_UTIL_wrap_read_pem_callback(pem_password_cb *cb, int rwflag);
 
-int ERR_load_UI_strings(void);
 
 # ifdef  __cplusplus
 }

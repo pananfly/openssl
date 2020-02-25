@@ -1,15 +1,16 @@
 /*
- * Copyright 2017 The OpenSSL Project Authors. All Rights Reserved.
+ * Copyright 2017-2018 The OpenSSL Project Authors. All Rights Reserved.
  * Copyright 2017 BaishanCloud. All rights reserved.
  *
- * Licensed under the OpenSSL license (the "License").  You may not use
+ * Licensed under the Apache License 2.0 (the "License").  You may not use
  * this file except in compliance with the License.  You can obtain a copy
  * in the file LICENSE in the source distribution or at
  * https://www.openssl.org/source/license.html
  */
 
 #include <openssl/bn.h>
-#include "rsa_locl.h"
+#include <openssl/err.h>
+#include "rsa_local.h"
 
 void rsa_multip_info_free_ex(RSA_PRIME_INFO *pinfo)
 {
@@ -32,9 +33,10 @@ RSA_PRIME_INFO *rsa_multip_info_new(void)
     RSA_PRIME_INFO *pinfo;
 
     /* create a RSA_PRIME_INFO structure */
-    pinfo = OPENSSL_zalloc(sizeof(RSA_PRIME_INFO));
-    if (pinfo == NULL)
+    if ((pinfo = OPENSSL_zalloc(sizeof(RSA_PRIME_INFO))) == NULL) {
+        RSAerr(RSA_F_RSA_MULTIP_INFO_NEW, ERR_R_MALLOC_FAILURE);
         return NULL;
+    }
     if ((pinfo->r = BN_secure_new()) == NULL)
         goto err;
     if ((pinfo->d = BN_secure_new()) == NULL)
@@ -51,6 +53,7 @@ RSA_PRIME_INFO *rsa_multip_info_new(void)
     BN_free(pinfo->d);
     BN_free(pinfo->t);
     BN_free(pinfo->pp);
+    OPENSSL_free(pinfo);
     return NULL;
 }
 
@@ -104,6 +107,9 @@ int rsa_multip_cap(int bits)
         cap = 3;
     else if (bits < 8192)
         cap = 4;
+
+    if (cap > RSA_MAX_PRIME_NUM)
+        cap = RSA_MAX_PRIME_NUM;
 
     return cap;
 }

@@ -1,7 +1,7 @@
 /*
  * Copyright 1995-2016 The OpenSSL Project Authors. All Rights Reserved.
  *
- * Licensed under the OpenSSL license (the "License").  You may not use
+ * Licensed under the Apache License 2.0 (the "License").  You may not use
  * this file except in compliance with the License.  You can obtain a copy
  * in the file LICENSE in the source distribution or at
  * https://www.openssl.org/source/license.html
@@ -9,7 +9,7 @@
 
 #include <stdio.h>
 #include <errno.h>
-#include "bio_lcl.h"
+#include "bio_local.h"
 #include "internal/cryptlib.h"
 
 static int buffer_write(BIO *h, const char *buf, int num);
@@ -19,7 +19,7 @@ static int buffer_gets(BIO *h, char *str, int size);
 static long buffer_ctrl(BIO *h, int cmd, long arg1, void *arg2);
 static int buffer_new(BIO *h);
 static int buffer_free(BIO *data);
-static long buffer_callback_ctrl(BIO *h, int cmd, bio_info_cb *fp);
+static long buffer_callback_ctrl(BIO *h, int cmd, BIO_info_cb *fp);
 #define DEFAULT_BUFFER_SIZE     4096
 
 static const BIO_METHOD methods_buffer = {
@@ -408,7 +408,7 @@ static long buffer_ctrl(BIO *b, int cmd, long num, void *ptr)
     return 0;
 }
 
-static long buffer_callback_ctrl(BIO *b, int cmd, bio_info_cb *fp)
+static long buffer_callback_ctrl(BIO *b, int cmd, BIO_info_cb *fp)
 {
     long ret = 1;
 

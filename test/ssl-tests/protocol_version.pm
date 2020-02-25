@@ -1,7 +1,7 @@
 # -*- mode: perl; -*-
-# Copyright 2016-2016 The OpenSSL Project Authors. All Rights Reserved.
+# Copyright 2016-2018 The OpenSSL Project Authors. All Rights Reserved.
 #
-# Licensed under the OpenSSL license (the "License").  You may not use
+# Licensed under the Apache License 2.0 (the "License").  You may not use
 # this file except in compliance with the License.  You can obtain a copy
 # in the file LICENSE in the source distribution or at
 # https://www.openssl.org/source/license.html
@@ -137,6 +137,7 @@ sub generate_version_tests {
         "client" => {
             #Offering only <=TLSv1.2 ciphersuites with TLSv1.3 should fail
             "CipherString" => "AES128-SHA",
+            "Ciphersuites" => "",
         },
         "server" => {
             "MaxProtocol" => "TLSv1.2"
@@ -154,6 +155,7 @@ sub generate_version_tests {
         "server" => {
             #Allowing only <=TLSv1.2 ciphersuites with TLSv1.3 should fail
             "CipherString" => "AES128-SHA",
+            "Ciphersuites" => "",
         },
         "test" => {
             "ExpectedResult" => "ServerFail",
@@ -208,6 +210,7 @@ sub generate_resumption_tests {
                         },
                         "resume_server" => {
                             "MaxProtocol" => $protocols[$resume_protocol],
+                            "Options" => $ticket,
                         },
                         "test" => {
                             "ExpectedProtocol" => $protocols[$resume_protocol],
@@ -249,7 +252,7 @@ sub generate_resumption_tests {
             "client" => {
             },
             "server" => {
-                "Curves" => "P-256"
+                "Curves" => disabled("ec") ? "ffdhe3072" : "P-256"
             },
             "resume_client" => {
             },

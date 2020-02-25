@@ -28,7 +28,7 @@ RSA_meth_get_multi_prime_keygen, RSA_meth_set_multi_prime_keygen
  const char *RSA_meth_get0_name(const RSA_METHOD *meth);
  int RSA_meth_set1_name(RSA_METHOD *meth, const char *name);
 
- int RSA_meth_get_flags(RSA_METHOD *meth);
+ int RSA_meth_get_flags(const RSA_METHOD *meth);
  int RSA_meth_set_flags(RSA_METHOD *meth, int flags);
 
  void *RSA_meth_get0_app_data(const RSA_METHOD *meth);
@@ -64,10 +64,10 @@ RSA_meth_get_multi_prime_keygen, RSA_meth_set_multi_prime_keygen
                                            unsigned char *to, RSA *rsa, int padding));
 
  /* Can be null */
- int (*RSA_meth_get_mod_exp(const RSA_METHOD *meth))(BIGNUM *r0, const BIGNUM *I,
+ int (*RSA_meth_get_mod_exp(const RSA_METHOD *meth))(BIGNUM *r0, const BIGNUM *i,
                                                      RSA *rsa, BN_CTX *ctx);
  int RSA_meth_set_mod_exp(RSA_METHOD *rsa,
-                          int (*mod_exp)(BIGNUM *r0, const BIGNUM *I, RSA *rsa,
+                          int (*mod_exp)(BIGNUM *r0, const BIGNUM *i, RSA *rsa,
                                          BN_CTX *ctx));
 
  /* Can be null */
@@ -125,8 +125,7 @@ RSA_meth_get_multi_prime_keygen, RSA_meth_set_multi_prime_keygen
 
 The B<RSA_METHOD> type is a structure used for the provision of custom
 RSA implementations. It provides a set of functions used by OpenSSL
-for the implementation of the various RSA capabilities. See the L<rsa>
-page for more information.
+for the implementation of the various RSA capabilities.
 
 RSA_meth_new() creates a new B<RSA_METHOD> structure. It should be
 given a unique B<name> and a set of B<flags>. The B<name> should be a
@@ -252,9 +251,9 @@ Other functions described here were added in OpenSSL 1.1.0.
 
 =head1 COPYRIGHT
 
-Copyright 2016-2017 The OpenSSL Project Authors. All Rights Reserved.
+Copyright 2016-2018 The OpenSSL Project Authors. All Rights Reserved.
 
-Licensed under the OpenSSL license (the "License").  You may not use
+Licensed under the Apache License 2.0 (the "License").  You may not use
 this file except in compliance with the License.  You can obtain a copy
 in the file LICENSE in the source distribution or at
 L<https://www.openssl.org/source/license.html>.

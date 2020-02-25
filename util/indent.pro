@@ -26,7 +26,7 @@
 -nprs
 -npsl
 -nsc
--ppi1 
+-ppi1
 -saf
 -sai
 -saw
@@ -36,7 +36,6 @@
 -T ACCESS_DESCRIPTION
 -T ADDED_OBJ
 -T AES_KEY
--T APP_INFO
 -T ARGS
 -T ASIdOrRange
 -T ASIdOrRanges
@@ -474,6 +473,7 @@
 -T asn1_ps_func
 -T bio_dgram_data
 -T bio_info_cb
+-T BIO_info_cb
 -T BIO_callback_fn
 -T char_io
 -T conf_finish_func
@@ -585,7 +585,6 @@
 -T STACK_OF_nid_triple_
 -T STACK_OF_void_
 -T LHASH_OF_ADDED_OBJ_
--T LHASH_OF_APP_INFO_
 -T LHASH_OF_CONF_VALUE_
 -T LHASH_OF_ENGINE_PILE_
 -T LHASH_OF_ERR_STATE_
@@ -635,3 +634,8 @@
 -T ossl_intmax_t
 -T ossl_uintmax_t
 -T ossl_uintmax_t
+-T CT_POLICY_EVAL_CTX
+-T RAND_DRBG
+-T RAND_DRBG_CTR
+-T RAND_POOL
+-T RAND_METHOD

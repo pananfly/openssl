@@ -1,7 +1,7 @@
 /*
- * Copyright 1995-2017 The OpenSSL Project Authors. All Rights Reserved.
+ * Copyright 1995-2018 The OpenSSL Project Authors. All Rights Reserved.
  *
- * Licensed under the OpenSSL license (the "License").  You may not use
+ * Licensed under the Apache License 2.0 (the "License").  You may not use
  * this file except in compliance with the License.  You can obtain a copy
  * in the file LICENSE in the source distribution or at
  * https://www.openssl.org/source/license.html
@@ -12,7 +12,7 @@
 #include <errno.h>
 #include <limits.h>
 
-#include "internal/ctype.h"
+#include "crypto/ctype.h"
 #include "internal/cryptlib.h"
 #include <openssl/crypto.h>
 #include <openssl/buffer.h>
@@ -22,8 +22,8 @@
 #include <openssl/x509v3.h>
 #include <openssl/objects.h>
 #include "internal/dane.h"
-#include "internal/x509_int.h"
-#include "x509_lcl.h"
+#include "crypto/x509.h"
+#include "x509_local.h"
 
 /* CRL score values */
 
@@ -366,6 +366,7 @@ static STACK_OF(X509) *lookup_certs_sk(X509_STORE_CTX *ctx, X509_NAME *nm)
     STACK_OF(X509) *sk = NULL;
     X509 *x;
     int i;
+
     for (i = 0; i < sk_X509_num(ctx->other_ctx); i++) {
         x = sk_X509_value(ctx->other_ctx, i);
         if (X509_NAME_cmp(nm, X509_get_subject_name(x)) == 0) {
@@ -373,6 +374,8 @@ static STACK_OF(X509) *lookup_certs_sk(X509_STORE_CTX *ctx, X509_NAME *nm)
                 sk = sk_X509_new_null();
             if (sk == NULL || sk_X509_push(sk, x) == 0) {
                 sk_X509_pop_free(sk, X509_free);
+                X509err(X509_F_LOOKUP_CERTS_SK, ERR_R_MALLOC_FAILURE);
+                ctx->error = X509_V_ERR_OUT_OF_MEM;
                 return NULL;
             }
             X509_up_ref(x);
@@ -514,15 +517,14 @@ static int check_chain_extensions(X509_STORE_CTX *ctx)
         /* check_purpose() makes the callback as needed */
         if (purpose > 0 && !check_purpose(ctx, x, purpose, i, must_be_ca))
             return 0;
-        /* Check pathlen if not self issued */
-        if ((i > 1) && !(x->ex_flags & EXFLAG_SI)
-            && (x->ex_pathlen != -1)
-            && (plen > (x->ex_pathlen + proxy_path_length + 1))) {
+        /* Check pathlen */
+        if ((i > 1) && (x->ex_pathlen != -1)
+            && (plen > (x->ex_pathlen + proxy_path_length))) {
             if (!verify_cb_cert(ctx, x, i, X509_V_ERR_PATH_LENGTH_EXCEEDED))
                 return 0;
         }
-        /* Increment path length if not self issued */
-        if (!(x->ex_flags & EXFLAG_SI))
+        /* Increment path length if not a self issued intermediate CA */
+        if (i > 0 && (x->ex_flags & EXFLAG_SI) == 0)
             plen++;
         /*
          * If this certificate is a proxy certificate, the next certificate
@@ -555,6 +557,27 @@ static int check_chain_extensions(X509_STORE_CTX *ctx)
             must_be_ca = 1;
     }
     return 1;
+}
+
+static int has_san_id(X509 *x, int gtype)
+{
+    int i;
+    int ret = 0;
+    GENERAL_NAMES *gs = X509_get_ext_d2i(x, NID_subject_alt_name, NULL, NULL);
+
+    if (gs == NULL)
+        return 0;
+
+    for (i = 0; i < sk_GENERAL_NAME_num(gs); i++) {
+        GENERAL_NAME *g = sk_GENERAL_NAME_value(gs, i);
+
+        if (g->type == gtype) {
+            ret = 1;
+            break;
+        }
+    }
+    GENERAL_NAMES_free(gs);
+    return ret;
 }
 
 static int check_name_constraints(X509_STORE_CTX *ctx)
@@ -655,7 +678,12 @@ static int check_name_constraints(X509_STORE_CTX *ctx)
                 int rv = NAME_CONSTRAINTS_check(x, nc);
 
                 /* If EE certificate check commonName too */
-                if (rv == X509_V_OK && i == 0)
+                if (rv == X509_V_OK && i == 0
+                    && (ctx->param->hostflags
+                        & X509_CHECK_FLAG_NEVER_CHECK_SUBJECT) == 0
+                    && ((ctx->param->hostflags
+                         & X509_CHECK_FLAG_ALWAYS_CHECK_SUBJECT) != 0
+                        || !has_san_id(x, GEN_DNS)))
                     rv = NAME_CONSTRAINTS_check_CN(x, nc);
 
                 switch (rv) {
@@ -1248,7 +1276,7 @@ static int check_crl_path(X509_STORE_CTX *ctx, X509 *x)
     /* Don't allow recursive CRL path validation */
     if (ctx->parent)
         return 0;
-    if (!X509_STORE_CTX_init(&crl_ctx, ctx->ctx, x, ctx->untrusted))
+    if (!X509_STORE_CTX_init(&crl_ctx, ctx->store, x, ctx->untrusted))
         return -1;
 
     crl_ctx.crls = ctx->crls;
@@ -1760,7 +1788,11 @@ int X509_cmp_time(const ASN1_TIME *ctm, time_t *cmp_time)
     static const size_t generalizedtime_length = sizeof("YYYYMMDDHHMMSSZ") - 1;
     ASN1_TIME *asn1_cmp_time = NULL;
     int i, day, sec, ret = 0;
-
+#ifdef CHARSET_EBCDIC
+    const char upper_z = 0x5A;
+#else
+    const char upper_z = 'Z';
+#endif
     /*
      * Note that ASN.1 allows much more slack in the time format than RFC5280.
      * In RFC5280, the representation is fixed:
@@ -1791,10 +1823,10 @@ int X509_cmp_time(const ASN1_TIME *ctm, time_t *cmp_time)
      * Digit and date ranges will be verified in the conversion methods.
      */
     for (i = 0; i < ctm->length - 1; i++) {
-        if (!ossl_isdigit(ctm->data[i]))
+        if (!ascii_isdigit(ctm->data[i]))
             return 0;
     }
-    if (ctm->data[ctm->length - 1] != 'Z')
+    if (ctm->data[ctm->length - 1] != upper_z)
         return 0;
 
     /*
@@ -1817,6 +1849,31 @@ int X509_cmp_time(const ASN1_TIME *ctm, time_t *cmp_time)
  err:
     ASN1_TIME_free(asn1_cmp_time);
     return ret;
+}
+
+/*
+ * Return 0 if time should not be checked or reference time is in range,
+ * or else 1 if it is past the end, or -1 if it is before the start
+ */
+int X509_cmp_timeframe(const X509_VERIFY_PARAM *vpm,
+                       const ASN1_TIME *start, const ASN1_TIME *end)
+{
+    time_t ref_time;
+    time_t *time = NULL;
+    unsigned long flags = vpm == NULL ? 0 : X509_VERIFY_PARAM_get_flags(vpm);
+
+    if ((flags & X509_V_FLAG_USE_CHECK_TIME) != 0) {
+        ref_time = X509_VERIFY_PARAM_get_time(vpm);
+        time = &ref_time;
+    } else if ((flags & X509_V_FLAG_NO_CHECK_TIME) != 0) {
+        return 0; /* this means ok */
+    } /* else reference time is the current time */
+
+    if (end != NULL && X509_cmp_time(end, time) < 0)
+        return 1;
+    if (start != NULL && X509_cmp_time(start, time) > 0)
+        return -1;
+    return 0;
 }
 
 ASN1_TIME *X509_gmtime_adj(ASN1_TIME *s, long adj)
@@ -2102,10 +2159,10 @@ int X509_STORE_CTX_purpose_inherit(X509_STORE_CTX *ctx, int def_purpose,
 {
     int idx;
     /* If purpose not set use default */
-    if (!purpose)
+    if (purpose == 0)
         purpose = def_purpose;
     /* If we have a purpose then check it is valid */
-    if (purpose) {
+    if (purpose != 0) {
         X509_PURPOSE *ptmp;
         idx = X509_PURPOSE_get_by_id(purpose);
         if (idx == -1) {
@@ -2173,7 +2230,7 @@ int X509_STORE_CTX_init(X509_STORE_CTX *ctx, X509_STORE *store, X509 *x509,
 {
     int ret = 1;
 
-    ctx->ctx = store;
+    ctx->store = store;
     ctx->cert = x509;
     ctx->untrusted = chain;
     ctx->crls = NULL;
@@ -2470,8 +2527,9 @@ int X509_STORE_CTX_get_num_untrusted(X509_STORE_CTX *ctx)
 int X509_STORE_CTX_set_default(X509_STORE_CTX *ctx, const char *name)
 {
     const X509_VERIFY_PARAM *param;
+
     param = X509_VERIFY_PARAM_lookup(name);
-    if (!param)
+    if (param == NULL)
         return 0;
     return X509_VERIFY_PARAM_inherit(ctx->param, param);
 }
@@ -3204,12 +3262,19 @@ static int check_key_level(X509_STORE_CTX *ctx, X509 *cert)
     EVP_PKEY *pkey = X509_get0_pubkey(cert);
     int level = ctx->param->auth_level;
 
+    /*
+     * At security level zero, return without checking for a supported public
+     * key type.  Some engines support key types not understood outside the
+     * engine, and we only need to understand the key when enforcing a security
+     * floor.
+     */
+    if (level <= 0)
+        return 1;
+
     /* Unsupported or malformed keys are not secure */
     if (pkey == NULL)
         return 0;
 
-    if (level <= 0)
-        return 1;
     if (level > NUM_AUTH_LEVELS)
         level = NUM_AUTH_LEVELS;
 

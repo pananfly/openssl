@@ -1,15 +1,15 @@
 /*
- * Copyright 1995-2017 The OpenSSL Project Authors. All Rights Reserved.
+ * Copyright 1995-2018 The OpenSSL Project Authors. All Rights Reserved.
  *
- * Licensed under the OpenSSL license (the "License").  You may not use
+ * Licensed under the Apache License 2.0 (the "License").  You may not use
  * this file except in compliance with the License.  You can obtain a copy
  * in the file LICENSE in the source distribution or at
  * https://www.openssl.org/source/license.html
  */
 
 
-#ifndef HEADER_INTERNAL_SOCKETS
-# define HEADER_INTERNAL_SOCKETS
+#ifndef OSSL_INTERNAL_SOCKETS_H
+# define OSSL_INTERNAL_SOCKETS_H
 
 # if defined(OPENSSL_SYS_VXWORKS) || defined(OPENSSL_SYS_UEFI)
 #  define NO_SYS_PARAM_H
@@ -72,11 +72,7 @@ struct servent *PASCAL getservbyname(const char *, const char *);
 #  else
 #   include <sys/socket.h>
 #   ifndef NO_SYS_UN_H
-#    ifdef OPENSSL_SYS_VXWORKS
-#     include <streams/un.h>
-#    else
-#     include <sys/un.h>
-#    endif
+#    include <sys/un.h>
 #    ifndef UNIX_PATH_MAX
 #     define UNIX_PATH_MAX sizeof(((struct sockaddr_un *)NULL)->sun_path)
 #    endif
@@ -90,10 +86,6 @@ struct servent *PASCAL getservbyname(const char *, const char *);
 #  endif
 
 #  ifdef OPENSSL_SYS_AIX
-#   include <sys/select.h>
-#  endif
-
-#  ifdef __QNX__
 #   include <sys/select.h>
 #  endif
 
@@ -116,10 +108,11 @@ struct servent *PASCAL getservbyname(const char *, const char *);
 # endif
 
 /*
- * Some IPv6 implementations are broken, disable them in known bad versions.
+ * Some IPv6 implementations are broken, you can disable them in known
+ * bad versions.
  */
 # if !defined(OPENSSL_USE_IPV6)
-#  if defined(AF_INET6) && !defined(NETWARE_CLIB)
+#  if defined(AF_INET6)
 #   define OPENSSL_USE_IPV6 1
 #  else
 #   define OPENSSL_USE_IPV6 0

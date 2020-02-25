@@ -1,7 +1,7 @@
 /*
- * Copyright 1995-2017 The OpenSSL Project Authors. All Rights Reserved.
+ * Copyright 1995-2018 The OpenSSL Project Authors. All Rights Reserved.
  *
- * Licensed under the OpenSSL license (the "License").  You may not use
+ * Licensed under the Apache License 2.0 (the "License").  You may not use
  * this file except in compliance with the License.  You can obtain a copy
  * in the file LICENSE in the source distribution or at
  * https://www.openssl.org/source/license.html
@@ -17,6 +17,7 @@ NON_EMPTY_TRANSLATION_UNIT
 # include <time.h>
 # include <string.h>
 # include "apps.h"
+# include "progs.h"
 # include <openssl/bio.h>
 # include <openssl/err.h>
 # include <openssl/bn.h>
@@ -36,25 +37,16 @@ typedef enum OPTION_choice {
     OPT_ERR = -1, OPT_EOF = 0, OPT_HELP,
     OPT_INFORM, OPT_OUTFORM, OPT_IN, OPT_OUT,
     OPT_ENGINE, OPT_CHECK, OPT_TEXT, OPT_NOOUT,
-    OPT_DSAPARAM, OPT_C, OPT_2, OPT_5,
+    OPT_DSAPARAM, OPT_C, OPT_2, OPT_3, OPT_5,
     OPT_R_ENUM
 } OPTION_CHOICE;
 
 const OPTIONS dhparam_options[] = {
-    {OPT_HELP_STR, 1, '-', "Usage: %s [flags] [numbits]\n"},
-    {OPT_HELP_STR, 1, '-', "Valid options are:\n"},
+    {OPT_HELP_STR, 1, '-', "Usage: %s [options] [numbits]\n"},
+
+    OPT_SECTION("General"),
     {"help", OPT_HELP, '-', "Display this summary"},
-    {"in", OPT_IN, '<', "Input file"},
-    {"inform", OPT_INFORM, 'F', "Input format, DER or PEM"},
-    {"outform", OPT_OUTFORM, 'F', "Output format, DER or PEM"},
-    {"out", OPT_OUT, '>', "Output file"},
     {"check", OPT_CHECK, '-', "Check the DH parameters"},
-    {"text", OPT_TEXT, '-', "Print a text form of the DH parameters"},
-    {"noout", OPT_NOOUT, '-', "Don't output any DH parameters"},
-    OPT_R_OPTIONS,
-    {"C", OPT_C, '-', "Print C code"},
-    {"2", OPT_2, '-', "Generate parameters using 2 as the generator value"},
-    {"5", OPT_5, '-', "Generate parameters using 5 as the generator value"},
 # ifndef OPENSSL_NO_DSA
     {"dsaparam", OPT_DSAPARAM, '-',
      "Read or generate DSA parameters, convert to DH"},
@@ -62,6 +54,25 @@ const OPTIONS dhparam_options[] = {
 # ifndef OPENSSL_NO_ENGINE
     {"engine", OPT_ENGINE, 's', "Use engine e, possibly a hardware device"},
 # endif
+
+    OPT_SECTION("Input"),
+    {"in", OPT_IN, '<', "Input file"},
+    {"inform", OPT_INFORM, 'F', "Input format, DER or PEM"},
+
+    OPT_SECTION("Output"),
+    {"out", OPT_OUT, '>', "Output file"},
+    {"outform", OPT_OUTFORM, 'F', "Output format, DER or PEM"},
+    {"text", OPT_TEXT, '-', "Print a text form of the DH parameters"},
+    {"noout", OPT_NOOUT, '-', "Don't output any DH parameters"},
+    {"C", OPT_C, '-', "Print C code"},
+    {"2", OPT_2, '-', "Generate parameters using 2 as the generator value"},
+    {"3", OPT_3, '-', "Generate parameters using 3 as the generator value"},
+    {"5", OPT_5, '-', "Generate parameters using 5 as the generator value"},
+
+    OPT_R_OPTIONS,
+
+    OPT_PARAMETERS(),
+    {"numbits", 0, 0, "Number of bits if generating parameters (optional)"},
     {NULL}
 };
 
@@ -124,6 +135,9 @@ int dhparam_main(int argc, char **argv)
         case OPT_2:
             g = 2;
             break;
+        case OPT_3:
+            g = 3;
+            break;
         case OPT_5:
             g = 5;
             break;
@@ -152,6 +166,11 @@ int dhparam_main(int argc, char **argv)
         goto end;
     }
 # endif
+
+    out = bio_open_default(outfile, 'w', outformat);
+    if (out == NULL)
+        goto end;
+
     /* DH parameters */
     if (num && !g)
         g = 2;
@@ -259,10 +278,6 @@ int dhparam_main(int argc, char **argv)
         /* dh != NULL */
     }
 
-    out = bio_open_default(outfile, 'w', outformat);
-    if (out == NULL)
-        goto end;
-
     if (text) {
         DHparams_print(out, dh);
     }
@@ -307,33 +322,31 @@ int dhparam_main(int argc, char **argv)
         bits = DH_bits(dh);
         DH_get0_pqg(dh, &pbn, NULL, &gbn);
         data = app_malloc(len, "print a BN");
-        BIO_printf(out, "#ifndef HEADER_DH_H\n"
-                        "# include <openssl/dh.h>\n"
-                        "#endif\n"
-                        "\n");
-        BIO_printf(out, "DH *get_dh%d()\n{\n", bits);
+
+        BIO_printf(out, "static DH *get_dh%d(void)\n{\n", bits);
         print_bignum_var(out, pbn, "dhp", bits, data);
         print_bignum_var(out, gbn, "dhg", bits, data);
         BIO_printf(out, "    DH *dh = DH_new();\n"
-                        "    BIGNUM *dhp_bn, *dhg_bn;\n"
+                        "    BIGNUM *p, *g;\n"
                         "\n"
                         "    if (dh == NULL)\n"
                         "        return NULL;\n");
-        BIO_printf(out, "    dhp_bn = BN_bin2bn(dhp_%d, sizeof(dhp_%d), NULL);\n",
+        BIO_printf(out, "    p = BN_bin2bn(dhp_%d, sizeof(dhp_%d), NULL);\n",
                    bits, bits);
-        BIO_printf(out, "    dhg_bn = BN_bin2bn(dhg_%d, sizeof(dhg_%d), NULL);\n",
+        BIO_printf(out, "    g = BN_bin2bn(dhg_%d, sizeof(dhg_%d), NULL);\n",
                    bits, bits);
-        BIO_printf(out, "    if (dhp_bn == NULL || dhg_bn == NULL\n"
-                        "            || !DH_set0_pqg(dh, dhp_bn, NULL, dhg_bn)) {\n"
+        BIO_printf(out, "    if (p == NULL || g == NULL\n"
+                        "            || !DH_set0_pqg(dh, p, NULL, g)) {\n"
                         "        DH_free(dh);\n"
-                        "        BN_free(dhp_bn);\n"
-                        "        BN_free(dhg_bn);\n"
+                        "        BN_free(p);\n"
+                        "        BN_free(g);\n"
                         "        return NULL;\n"
                         "    }\n");
         if (DH_get_length(dh) > 0)
             BIO_printf(out,
                         "    if (!DH_set_length(dh, %ld)) {\n"
                         "        DH_free(dh);\n"
+                        "        return NULL;\n"
                         "    }\n", DH_get_length(dh));
         BIO_printf(out, "    return dh;\n}\n");
         OPENSSL_free(data);
@@ -369,16 +382,9 @@ int dhparam_main(int argc, char **argv)
 
 static int dh_cb(int p, int n, BN_GENCB *cb)
 {
-    char c = '*';
+    static const char symbols[] = ".+*\n";
+    char c = (p >= 0 && (size_t)p < sizeof(symbols) - 1) ? symbols[p] : '?';
 
-    if (p == 0)
-        c = '.';
-    if (p == 1)
-        c = '+';
-    if (p == 2)
-        c = '*';
-    if (p == 3)
-        c = '\n';
     BIO_write(BN_GENCB_get_arg(cb), &c, 1);
     (void)BIO_flush(BN_GENCB_get_arg(cb));
     return 1;

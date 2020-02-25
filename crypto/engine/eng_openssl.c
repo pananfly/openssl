@@ -1,8 +1,8 @@
 /*
- * Copyright 2001-2016 The OpenSSL Project Authors. All Rights Reserved.
+ * Copyright 2001-2018 The OpenSSL Project Authors. All Rights Reserved.
  * Copyright (c) 2002, Oracle and/or its affiliates. All rights reserved
  *
- * Licensed under the OpenSSL license (the "License").  You may not use
+ * Licensed under the Apache License 2.0 (the "License").  You may not use
  * this file except in compliance with the License.  You can obtain a copy
  * in the file LICENSE in the source distribution or at
  * https://www.openssl.org/source/license.html
@@ -11,7 +11,7 @@
 #include <stdio.h>
 #include <openssl/crypto.h>
 #include "internal/cryptlib.h"
-#include "internal/engine.h"
+#include "crypto/engine.h"
 #include <openssl/pem.h>
 #include <openssl/evp.h>
 #include <openssl/rand.h>
@@ -29,12 +29,14 @@
  */
 #define TEST_ENG_OPENSSL_RC4
 #ifndef OPENSSL_NO_STDIO
-#define TEST_ENG_OPENSSL_PKEY
+# define TEST_ENG_OPENSSL_PKEY
 #endif
 /* #define TEST_ENG_OPENSSL_HMAC */
 /* #define TEST_ENG_OPENSSL_HMAC_INIT */
 /* #define TEST_ENG_OPENSSL_RC4_OTHERS */
-#define TEST_ENG_OPENSSL_RC4_P_INIT
+#ifndef OPENSSL_NO_STDIO
+# define TEST_ENG_OPENSSL_RC4_P_INIT
+#endif
 /* #define TEST_ENG_OPENSSL_RC4_P_CIPHER */
 #define TEST_ENG_OPENSSL_SHA
 /* #define TEST_ENG_OPENSSL_SHA_OTHERS */
@@ -189,12 +191,15 @@ typedef struct {
 static int test_rc4_init_key(EVP_CIPHER_CTX *ctx, const unsigned char *key,
                              const unsigned char *iv, int enc)
 {
+    const int n = EVP_CIPHER_CTX_key_length(ctx);
+
 # ifdef TEST_ENG_OPENSSL_RC4_P_INIT
     fprintf(stderr, "(TEST_ENG_OPENSSL_RC4) test_init_key() called\n");
 # endif
-    memcpy(&test(ctx)->key[0], key, EVP_CIPHER_CTX_key_length(ctx));
-    RC4_set_key(&test(ctx)->ks, EVP_CIPHER_CTX_key_length(ctx),
-                test(ctx)->key);
+    if (n <= 0)
+        return n;
+    memcpy(&test(ctx)->key[0], key, n);
+    RC4_set_key(&test(ctx)->ks, n, test(ctx)->key);
     return 1;
 }
 
@@ -431,9 +436,10 @@ static int ossl_hmac_init(EVP_PKEY_CTX *ctx)
 {
     OSSL_HMAC_PKEY_CTX *hctx;
 
-    hctx = OPENSSL_zalloc(sizeof(*hctx));
-    if (hctx == NULL)
+    if ((hctx = OPENSSL_zalloc(sizeof(*hctx))) == NULL) {
+        ENGINEerr(ENGINE_F_OSSL_HMAC_INIT, ERR_R_MALLOC_FAILURE);
         return 0;
+    }
     hctx->ktmp.type = V_ASN1_OCTET_STRING;
     hctx->ctx = HMAC_CTX_new();
     if (hctx->ctx == NULL) {
@@ -619,7 +625,8 @@ static int ossl_pkey_meths(ENGINE *e, EVP_PKEY_METHOD **pmeth,
         EVP_PKEY_HMAC,
         0
     };
-    if (!pmeth) {
+
+    if (pmeth == NULL) {
         *nids = ossl_pkey_nids;
         return 1;
     }

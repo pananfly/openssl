@@ -1,7 +1,7 @@
 /*
- * Copyright 2006-2016 The OpenSSL Project Authors. All Rights Reserved.
+ * Copyright 2006-2018 The OpenSSL Project Authors. All Rights Reserved.
  *
- * Licensed under the OpenSSL license (the "License").  You may not use
+ * Licensed under the Apache License 2.0 (the "License").  You may not use
  * this file except in compliance with the License.  You can obtain a copy
  * in the file LICENSE in the source distribution or at
  * https://www.openssl.org/source/license.html
@@ -13,15 +13,15 @@
 #include <openssl/x509.h>
 #include <openssl/evp.h>
 #include <openssl/bn.h>
-#include "internal/evp_int.h"
-#include "dsa_locl.h"
+#include "crypto/evp.h"
+#include "dsa_local.h"
 
 /* DSA pkey context structure */
 
 typedef struct {
     /* Parameter gen parameters */
-    int nbits;                  /* size of p in bits (default: 1024) */
-    int qbits;                  /* size of q in bits (default: 160) */
+    int nbits;                  /* size of p in bits (default: 2048) */
+    int qbits;                  /* size of q in bits (default: 224) */
     const EVP_MD *pmd;          /* MD for parameter generation */
     /* Keygen callback info */
     int gentmp[2];
@@ -35,8 +35,8 @@ static int pkey_dsa_init(EVP_PKEY_CTX *ctx)
 
     if (dctx == NULL)
         return 0;
-    dctx->nbits = 1024;
-    dctx->qbits = 160;
+    dctx->nbits = 2048;
+    dctx->qbits = 224;
     dctx->pmd = NULL;
     dctx->md = NULL;
 
@@ -47,7 +47,7 @@ static int pkey_dsa_init(EVP_PKEY_CTX *ctx)
     return 1;
 }
 
-static int pkey_dsa_copy(EVP_PKEY_CTX *dst, EVP_PKEY_CTX *src)
+static int pkey_dsa_copy(EVP_PKEY_CTX *dst, const EVP_PKEY_CTX *src)
 {
     DSA_PKEY_CTX *dctx, *sctx;
 
@@ -77,13 +77,8 @@ static int pkey_dsa_sign(EVP_PKEY_CTX *ctx, unsigned char *sig,
     DSA_PKEY_CTX *dctx = ctx->data;
     DSA *dsa = ctx->pkey->pkey.dsa;
 
-    if (dctx->md) {
-        if (tbslen != (size_t)EVP_MD_size(dctx->md))
-            return 0;
-    } else {
-        if (tbslen != SHA_DIGEST_LENGTH)
-            return 0;
-    }
+    if (dctx->md != NULL && tbslen != (size_t)EVP_MD_size(dctx->md))
+        return 0;
 
     ret = DSA_sign(0, tbs, tbslen, sig, &sltmp, dsa);
 
@@ -101,13 +96,8 @@ static int pkey_dsa_verify(EVP_PKEY_CTX *ctx,
     DSA_PKEY_CTX *dctx = ctx->data;
     DSA *dsa = ctx->pkey->pkey.dsa;
 
-    if (dctx->md) {
-        if (tbslen != (size_t)EVP_MD_size(dctx->md))
-            return 0;
-    } else {
-        if (tbslen != SHA_DIGEST_LENGTH)
-            return 0;
-    }
+    if (dctx->md != NULL && tbslen != (size_t)EVP_MD_size(dctx->md))
+        return 0;
 
     ret = DSA_verify(0, tbs, tbslen, sig, siglen, dsa);
 
@@ -148,7 +138,11 @@ static int pkey_dsa_ctrl(EVP_PKEY_CTX *ctx, int type, int p1, void *p2)
             EVP_MD_type((const EVP_MD *)p2) != NID_sha224 &&
             EVP_MD_type((const EVP_MD *)p2) != NID_sha256 &&
             EVP_MD_type((const EVP_MD *)p2) != NID_sha384 &&
-            EVP_MD_type((const EVP_MD *)p2) != NID_sha512) {
+            EVP_MD_type((const EVP_MD *)p2) != NID_sha512 &&
+            EVP_MD_type((const EVP_MD *)p2) != NID_sha3_224 &&
+            EVP_MD_type((const EVP_MD *)p2) != NID_sha3_256 &&
+            EVP_MD_type((const EVP_MD *)p2) != NID_sha3_384 &&
+            EVP_MD_type((const EVP_MD *)p2) != NID_sha3_512) {
             DSAerr(DSA_F_PKEY_DSA_CTRL, DSA_R_INVALID_DIGEST_TYPE);
             return 0;
         }
@@ -184,14 +178,16 @@ static int pkey_dsa_ctrl_str(EVP_PKEY_CTX *ctx,
     }
     if (strcmp(type, "dsa_paramgen_q_bits") == 0) {
         int qbits = atoi(value);
-        return EVP_PKEY_CTX_ctrl(ctx, EVP_PKEY_DSA, EVP_PKEY_OP_PARAMGEN,
-                                 EVP_PKEY_CTRL_DSA_PARAMGEN_Q_BITS, qbits,
-                                 NULL);
+        return EVP_PKEY_CTX_set_dsa_paramgen_q_bits(ctx, qbits);
     }
     if (strcmp(type, "dsa_paramgen_md") == 0) {
-        return EVP_PKEY_CTX_ctrl(ctx, EVP_PKEY_DSA, EVP_PKEY_OP_PARAMGEN,
-                                 EVP_PKEY_CTRL_DSA_PARAMGEN_MD, 0,
-                                 (void *)EVP_get_digestbyname(value));
+        const EVP_MD *md = EVP_get_digestbyname(value);
+
+        if (md == NULL) {
+            DSAerr(DSA_F_PKEY_DSA_CTRL_STR, DSA_R_INVALID_DIGEST_TYPE);
+            return 0;
+        }
+        return EVP_PKEY_CTX_set_dsa_paramgen_md(ctx, md);
     }
     return -2;
 }
@@ -243,7 +239,7 @@ static int pkey_dsa_keygen(EVP_PKEY_CTX *ctx, EVP_PKEY *pkey)
     return DSA_generate_key(pkey->pkey.dsa);
 }
 
-const EVP_PKEY_METHOD dsa_pkey_meth = {
+static const EVP_PKEY_METHOD dsa_pkey_meth = {
     EVP_PKEY_DSA,
     EVP_PKEY_FLAG_AUTOARGLEN,
     pkey_dsa_init,
@@ -275,3 +271,8 @@ const EVP_PKEY_METHOD dsa_pkey_meth = {
     pkey_dsa_ctrl,
     pkey_dsa_ctrl_str
 };
+
+const EVP_PKEY_METHOD *dsa_pkey_method(void)
+{
+    return &dsa_pkey_meth;
+}

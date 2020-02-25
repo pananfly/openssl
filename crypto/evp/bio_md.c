@@ -1,7 +1,7 @@
 /*
  * Copyright 1995-2016 The OpenSSL Project Authors. All Rights Reserved.
  *
- * Licensed under the OpenSSL license (the "License").  You may not use
+ * Licensed under the Apache License 2.0 (the "License").  You may not use
  * this file except in compliance with the License.  You can obtain a copy
  * in the file LICENSE in the source distribution or at
  * https://www.openssl.org/source/license.html
@@ -9,11 +9,8 @@
 
 #include <stdio.h>
 #include <errno.h>
-#include "internal/cryptlib.h"
 #include <openssl/buffer.h>
 #include <openssl/evp.h>
-#include "internal/evp_int.h"
-#include "evp_locl.h"
 #include "internal/bio.h"
 
 /*
@@ -26,7 +23,7 @@ static int md_gets(BIO *h, char *str, int size);
 static long md_ctrl(BIO *h, int cmd, long arg1, void *arg2);
 static int md_new(BIO *h);
 static int md_free(BIO *data);
-static long md_callback_ctrl(BIO *h, int cmd, bio_info_cb *fp);
+static long md_callback_ctrl(BIO *h, int cmd, BIO_info_cb *fp);
 
 static const BIO_METHOD methods_md = {
     BIO_TYPE_MD,
@@ -148,7 +145,7 @@ static long md_ctrl(BIO *b, int cmd, long num, void *ptr)
     switch (cmd) {
     case BIO_CTRL_RESET:
         if (BIO_get_init(b))
-            ret = EVP_DigestInit_ex(ctx, ctx->digest, NULL);
+            ret = EVP_DigestInit_ex(ctx, EVP_MD_CTX_md(ctx), NULL);
         else
             ret = 0;
         if (ret > 0)
@@ -157,7 +154,7 @@ static long md_ctrl(BIO *b, int cmd, long num, void *ptr)
     case BIO_C_GET_MD:
         if (BIO_get_init(b)) {
             ppmd = ptr;
-            *ppmd = ctx->digest;
+            *ppmd = EVP_MD_CTX_md(ctx);
         } else
             ret = 0;
         break;
@@ -198,7 +195,7 @@ static long md_ctrl(BIO *b, int cmd, long num, void *ptr)
     return ret;
 }
 
-static long md_callback_ctrl(BIO *b, int cmd, bio_info_cb *fp)
+static long md_callback_ctrl(BIO *b, int cmd, BIO_info_cb *fp)
 {
     long ret = 1;
     BIO *next;
@@ -223,7 +220,7 @@ static int md_gets(BIO *bp, char *buf, int size)
 
     ctx = BIO_get_data(bp);
 
-    if (size < ctx->digest->md_size)
+    if (size < EVP_MD_CTX_size(ctx))
         return 0;
 
     if (EVP_DigestFinal_ex(ctx, (unsigned char *)buf, &ret) <= 0)

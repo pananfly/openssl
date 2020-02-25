@@ -1,7 +1,7 @@
 /*
- * Copyright 1995-2016 The OpenSSL Project Authors. All Rights Reserved.
+ * Copyright 1995-2018 The OpenSSL Project Authors. All Rights Reserved.
  *
- * Licensed under the OpenSSL license (the "License").  You may not use
+ * Licensed under the Apache License 2.0 (the "License").  You may not use
  * this file except in compliance with the License.  You can obtain a copy
  * in the file LICENSE in the source distribution or at
  * https://www.openssl.org/source/license.html
@@ -38,9 +38,9 @@
         of memory.
 
         BIO_f_reliable splits data stream into blocks. Each block is prefixed
-        with it's length and suffixed with it's digest. So you need only
+        with its length and suffixed with its digest. So you need only
         several Kbytes of memory to buffer single block before verifying
-        it's digest.
+        its digest.
 
         BIO_f_reliable goes further and adds several important capabilities:
 
@@ -76,14 +76,14 @@
 #include "internal/bio.h"
 #include <openssl/evp.h>
 #include <openssl/rand.h>
-#include "internal/evp_int.h"
+#include "crypto/evp.h"
 
 static int ok_write(BIO *h, const char *buf, int num);
 static int ok_read(BIO *h, char *buf, int size);
 static long ok_ctrl(BIO *h, int cmd, long arg1, void *arg2);
 static int ok_new(BIO *h);
 static int ok_free(BIO *data);
-static long ok_callback_ctrl(BIO *h, int cmd, bio_info_cb *fp);
+static long ok_callback_ctrl(BIO *h, int cmd, BIO_info_cb *fp);
 
 static __owur int sig_out(BIO *b);
 static __owur int sig_in(BIO *b);
@@ -133,9 +133,10 @@ static int ok_new(BIO *bi)
 {
     BIO_OK_CTX *ctx;
 
-    ctx = OPENSSL_zalloc(sizeof(*ctx));
-    if (ctx == NULL)
+    if ((ctx = OPENSSL_zalloc(sizeof(*ctx))) == NULL) {
+        EVPerr(EVP_F_OK_NEW, ERR_R_MALLOC_FAILURE);
         return 0;
+    }
 
     ctx->cont = 1;
     ctx->sigio = 1;
@@ -403,7 +404,7 @@ static long ok_ctrl(BIO *b, int cmd, long num, void *ptr)
     return ret;
 }
 
-static long ok_callback_ctrl(BIO *b, int cmd, bio_info_cb *fp)
+static long ok_callback_ctrl(BIO *b, int cmd, BIO_info_cb *fp)
 {
     long ret = 1;
     BIO *next;

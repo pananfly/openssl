@@ -1,6 +1,6 @@
-# Copyright 2016 The OpenSSL Project Authors. All Rights Reserved.
+# Copyright 2016-2018 The OpenSSL Project Authors. All Rights Reserved.
 #
-# Licensed under the OpenSSL license (the "License").  You may not use
+# Licensed under the Apache License 2.0 (the "License").  You may not use
 # this file except in compliance with the License.  You can obtain a copy
 # in the file LICENSE in the source distribution or at
 # https://www.openssl.org/source/license.html
@@ -12,6 +12,11 @@ package TLSProxy::ServerHello;
 use vars '@ISA';
 push @ISA, 'TLSProxy::Message';
 
+my $hrrrandom = pack("C*", 0xCF, 0x21, 0xAD, 0x74, 0xE5, 0x9A, 0x61, 0x11, 0xBE,
+                           0x1D, 0x8C, 0x02, 0x1E, 0x65, 0xB8, 0x91, 0xC2, 0xA2,
+                           0x11, 0x16, 0x7A, 0xBB, 0x8C, 0x5E, 0x07, 0x9E, 0x09,
+                           0xE2, 0xC8, 0xA8, 0x33, 0x9C);
+
 sub new
 {
     my $class = shift;
@@ -20,7 +25,7 @@ sub new
         $records,
         $startoffset,
         $message_frag_lens) = @_;
-    
+
     my $self = $class->SUPER::new(
         $server,
         TLSProxy::Message::MT_SERVER_HELLO,
@@ -45,30 +50,23 @@ sub parse
     my $self = shift;
     my $ptr = 2;
     my ($server_version) = unpack('n', $self->data);
-
-    # TODO(TLS1.3): Replace this reference to draft version before release
-    if ($server_version == TLSProxy::Record::VERS_TLS_1_3_DRAFT) {
-        $server_version = TLSProxy::Record::VERS_TLS_1_3;
-        TLSProxy::Proxy->is_tls13(1);
-    }
+    my $neg_version = $server_version;
 
     my $random = substr($self->data, $ptr, 32);
     $ptr += 32;
     my $session_id_len = 0;
     my $session = "";
-    if (!TLSProxy::Proxy->is_tls13()) {
-        $session_id_len = unpack('C', substr($self->data, $ptr));
-        $ptr++;
-        $session = substr($self->data, $ptr, $session_id_len);
-        $ptr += $session_id_len;
-    }
+    $session_id_len = unpack('C', substr($self->data, $ptr));
+    $ptr++;
+    $session = substr($self->data, $ptr, $session_id_len);
+    $ptr += $session_id_len;
+
     my $ciphersuite = unpack('n', substr($self->data, $ptr));
     $ptr += 2;
     my $comp_meth = 0;
-    if (!TLSProxy::Proxy->is_tls13()) {
-        $comp_meth = unpack('C', substr($self->data, $ptr));
-        $ptr++;
-    }
+    $comp_meth = unpack('C', substr($self->data, $ptr));
+    $ptr++;
+
     my $extensions_len = unpack('n', substr($self->data, $ptr));
     if (!defined $extensions_len) {
         $extensions_len = 0;
@@ -80,7 +78,7 @@ sub parse
     my $extension_data;
     if ($extensions_len != 0) {
         $extension_data = substr($self->data, $ptr);
-    
+
         if (length($extension_data) != $extensions_len) {
             die "Invalid extension length\n";
         }
@@ -96,6 +94,18 @@ sub parse
         my $extdata = substr($extension_data, 4, $size);
         $extension_data = substr($extension_data, 4 + $size);
         $extensions{$type} = $extdata;
+        if ($type == TLSProxy::Message::EXT_SUPPORTED_VERSIONS) {
+            $neg_version = unpack('n', $extdata);
+        }
+    }
+
+    if ($random eq $hrrrandom) {
+        TLSProxy::Proxy->is_tls13(1);
+    } elsif ($neg_version == TLSProxy::Record::VERS_TLS_1_3) {
+        TLSProxy::Proxy->is_tls13(1);
+
+        TLSProxy::Record->server_encrypting(1);
+        TLSProxy::Record->client_encrypting(1);
     }
 
     $self->server_version($server_version);
@@ -109,10 +119,6 @@ sub parse
 
     $self->process_data();
 
-    if (TLSProxy::Proxy->is_tls13()) {
-        TLSProxy::Record->server_encrypting(1);
-        TLSProxy::Record->client_encrypting(1);
-    }
 
     print "    Server Version:".$server_version."\n";
     print "    Session ID Len:".$session_id_len."\n";
@@ -138,21 +144,17 @@ sub set_message_contents
 
     $data = pack('n', $self->server_version);
     $data .= $self->random;
-    if (!TLSProxy::Proxy->is_tls13()) {
-        $data .= pack('C', $self->session_id_len);
-        $data .= $self->session;
-    }
+    $data .= pack('C', $self->session_id_len);
+    $data .= $self->session;
     $data .= pack('n', $self->ciphersuite);
-    if (!TLSProxy::Proxy->is_tls13()) {
-        $data .= pack('C', $self->comp_meth);
-    }
+    $data .= pack('C', $self->comp_meth);
 
     foreach my $key (keys %{$self->extension_data}) {
         my $extdata = ${$self->extension_data}{$key};
         $extensions .= pack("n", $key);
         $extensions .= pack("n", length($extdata));
         $extensions .= $extdata;
-        if ($key == TLSProxy::Message::EXT_DUPLICATE_EXTENSION) {
+        if ($key == $self->dupext) {
           $extensions .= pack("n", $key);
           $extensions .= pack("n", length($extdata));
           $extensions .= $extdata;

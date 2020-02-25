@@ -1,16 +1,17 @@
 /*
- * Copyright 1995-2017 The OpenSSL Project Authors. All Rights Reserved.
+ * Copyright 1995-2018 The OpenSSL Project Authors. All Rights Reserved.
  *
- * Licensed under the OpenSSL license (the "License").  You may not use
+ * Licensed under the Apache License 2.0 (the "License").  You may not use
  * this file except in compliance with the License.  You can obtain a copy
  * in the file LICENSE in the source distribution or at
  * https://www.openssl.org/source/license.html
  */
 
-#include "../ssl_locl.h"
-#include "internal/constant_time_locl.h"
+#include "../ssl_local.h"
+#include "internal/constant_time.h"
+#include <openssl/trace.h>
 #include <openssl/rand.h>
-#include "record_locl.h"
+#include "record_local.h"
 #include "internal/cryptlib.h"
 
 static const unsigned char ssl3_pad_1[48] = {
@@ -103,7 +104,7 @@ static int ssl3_record_app_data_waiting(SSL *s)
 
 int early_data_count_ok(SSL *s, size_t length, size_t overhead, int send)
 {
-    uint32_t max_early_data = s->max_early_data;
+    uint32_t max_early_data;
     SSL_SESSION *sess = s->session;
 
     /*
@@ -120,9 +121,14 @@ int early_data_count_ok(SSL *s, size_t length, size_t overhead, int send)
         }
         sess = s->psksession;
     }
-    if (!s->server
-            || (s->hit && sess->ext.max_early_data < s->max_early_data))
+
+    if (!s->server)
         max_early_data = sess->ext.max_early_data;
+    else if (s->ext.early_data != SSL_EARLY_DATA_ACCEPTED)
+        max_early_data = s->recv_max_early_data;
+    else
+        max_early_data = s->recv_max_early_data < sess->ext.max_early_data
+                         ? s->recv_max_early_data : sess->ext.max_early_data;
 
     if (max_early_data == 0) {
         SSLfatal(s, send ? SSL_AD_INTERNAL_ERROR : SSL_AD_UNEXPECTED_MESSAGE,
@@ -181,9 +187,11 @@ int ssl3_get_record(SSL *s)
     size_t num_recs = 0, max_recs, j;
     PACKET pkt, sslv2pkt;
     size_t first_rec_len;
+    int is_ktls_left;
 
     rr = RECORD_LAYER_get_rrec(&s->rlayer);
     rbuf = RECORD_LAYER_get_rbuf(&s->rlayer);
+    is_ktls_left = (rbuf->left > 0);
     max_recs = s->max_pipelines;
     if (max_recs == 0)
         max_recs = 1;
@@ -202,8 +210,32 @@ int ssl3_get_record(SSL *s)
             rret = ssl3_read_n(s, SSL3_RT_HEADER_LENGTH,
                                SSL3_BUFFER_get_len(rbuf), 0,
                                num_recs == 0 ? 1 : 0, &n);
-            if (rret <= 0)
-                return rret;     /* error or non-blocking */
+            if (rret <= 0) {
+#ifndef OPENSSL_NO_KTLS
+                if (!BIO_get_ktls_recv(s->rbio))
+                    return rret;     /* error or non-blocking */
+                switch (errno) {
+                case EBADMSG:
+                    SSLfatal(s, SSL_AD_BAD_RECORD_MAC,
+                             SSL_F_SSL3_GET_RECORD,
+                             SSL_R_DECRYPTION_FAILED_OR_BAD_RECORD_MAC);
+                    break;
+                case EMSGSIZE:
+                    SSLfatal(s, SSL_AD_RECORD_OVERFLOW,
+                             SSL_F_SSL3_GET_RECORD,
+                             SSL_R_PACKET_LENGTH_TOO_LONG);
+                    break;
+                case EINVAL:
+                    SSLfatal(s, SSL_AD_PROTOCOL_VERSION,
+                             SSL_F_SSL3_GET_RECORD,
+                             SSL_R_WRONG_VERSION_NUMBER);
+                    break;
+                default:
+                    break;
+                }
+#endif
+                return rret;
+            }
             RECORD_LAYER_set_rstate(&s->rlayer, SSL_ST_READ_BODY);
 
             p = RECORD_LAYER_get_packet(&s->rlayer);
@@ -270,13 +302,14 @@ int ssl3_get_record(SSL *s)
                 thisrr->rec_version = version;
 
                 /*
-                 * Lets check version. In TLSv1.3 we ignore this field. For the
+                 * Lets check version. In TLSv1.3 we only check this field
+                 * when encryption is occurring (see later check). For the
                  * ServerHello after an HRR we haven't actually selected TLSv1.3
                  * yet, but we still treat it as TLSv1.3, so we must check for
                  * that explicitly
                  */
                 if (!s->first_packet && !SSL_IS_TLS13(s)
-                        && !s->hello_retry_request
+                        && s->hello_retry_request != SSL_HRR_PENDING
                         && version != (unsigned int)s->version) {
                     if ((s->version & 0xFF00) == (version & 0xFF00)
                         && !s->enc_write_ctx && !s->write_hash) {
@@ -333,11 +366,22 @@ int ssl3_get_record(SSL *s)
                     }
                 }
 
-                if (SSL_IS_TLS13(s) && s->enc_read_ctx != NULL
-                        && thisrr->type != SSL3_RT_APPLICATION_DATA) {
-                    SSLfatal(s, SSL_AD_UNEXPECTED_MESSAGE,
-                             SSL_F_SSL3_GET_RECORD, SSL_R_BAD_RECORD_TYPE);
-                    return -1;
+                if (SSL_IS_TLS13(s) && s->enc_read_ctx != NULL) {
+                    if (thisrr->type != SSL3_RT_APPLICATION_DATA
+                            && (thisrr->type != SSL3_RT_CHANGE_CIPHER_SPEC
+                                || !SSL_IS_FIRST_HANDSHAKE(s))
+                            && (thisrr->type != SSL3_RT_ALERT
+                                || s->statem.enc_read_state
+                                   != ENC_READ_STATE_ALLOW_PLAIN_ALERTS)) {
+                        SSLfatal(s, SSL_AD_UNEXPECTED_MESSAGE,
+                                 SSL_F_SSL3_GET_RECORD, SSL_R_BAD_RECORD_TYPE);
+                        return -1;
+                    }
+                    if (thisrr->rec_version != TLS1_2_VERSION) {
+                        SSLfatal(s, SSL_AD_DECODE_ERROR, SSL_F_SSL3_GET_RECORD,
+                                 SSL_R_WRONG_VERSION_NUMBER);
+                        return -1;
+                    }
                 }
 
                 if (thisrr->length >
@@ -369,7 +413,7 @@ int ssl3_get_record(SSL *s)
                 len -= SSL3_RT_MAX_COMPRESSED_OVERHEAD;
 #endif
 
-            if (thisrr->length > len) {
+            if (thisrr->length > len && !BIO_get_ktls_recv(s->rbio)) {
                 SSLfatal(s, SSL_AD_RECORD_OVERFLOW, SSL_F_SSL3_GET_RECORD,
                          SSL_R_ENCRYPTED_LENGTH_TOO_LONG);
                 return -1;
@@ -387,6 +431,7 @@ int ssl3_get_record(SSL *s)
         } else {
             more = thisrr->length;
         }
+
         if (more > 0) {
             /* now s->packet_length == SSL3_RT_HEADER_LENGTH */
 
@@ -443,6 +488,43 @@ int ssl3_get_record(SSL *s)
              && (EVP_CIPHER_flags(EVP_CIPHER_CTX_cipher(s->enc_read_ctx))
                  & EVP_CIPH_FLAG_PIPELINE)
              && ssl3_record_app_data_waiting(s));
+
+    if (num_recs == 1
+            && thisrr->type == SSL3_RT_CHANGE_CIPHER_SPEC
+            && (SSL_IS_TLS13(s) || s->hello_retry_request != SSL_HRR_NONE)
+            && SSL_IS_FIRST_HANDSHAKE(s)) {
+        /*
+         * CCS messages must be exactly 1 byte long, containing the value 0x01
+         */
+        if (thisrr->length != 1 || thisrr->data[0] != 0x01) {
+            SSLfatal(s, SSL_AD_ILLEGAL_PARAMETER, SSL_F_SSL3_GET_RECORD,
+                     SSL_R_INVALID_CCS_MESSAGE);
+            return -1;
+        }
+        /*
+         * CCS messages are ignored in TLSv1.3. We treat it like an empty
+         * handshake record
+         */
+        thisrr->type = SSL3_RT_HANDSHAKE;
+        RECORD_LAYER_inc_empty_record_count(&s->rlayer);
+        if (RECORD_LAYER_get_empty_record_count(&s->rlayer)
+            > MAX_EMPTY_RECORDS) {
+            SSLfatal(s, SSL_AD_UNEXPECTED_MESSAGE, SSL_F_SSL3_GET_RECORD,
+                     SSL_R_UNEXPECTED_CCS_MESSAGE);
+            return -1;
+        }
+        thisrr->read = 1;
+        RECORD_LAYER_set_numrpipes(&s->rlayer, 1);
+
+        return 1;
+    }
+
+    /*
+     * KTLS reads full records. If there is any data left,
+     * then it is from before enabling ktls
+     */
+    if (BIO_get_ktls_recv(s->rbio) && !is_ktls_left)
+        goto skip_decryption;
 
     /*
      * If in encrypt-then-mac mode calculate mac from encrypted record. All
@@ -512,19 +594,14 @@ int ssl3_get_record(SSL *s)
             RECORD_LAYER_reset_read_sequence(&s->rlayer);
             return 1;
         }
-        SSLfatal(s, SSL_AD_DECRYPTION_FAILED, SSL_F_SSL3_GET_RECORD,
+        SSLfatal(s, SSL_AD_BAD_RECORD_MAC, SSL_F_SSL3_GET_RECORD,
                  SSL_R_BLOCK_CIPHER_PAD_IS_WRONG);
         return -1;
     }
-#ifdef SSL_DEBUG
-    printf("dec %"OSSLzu"\n", rr[0].length);
-    {
-        size_t z;
-        for (z = 0; z < rr[0].length; z++)
-            printf("%02X%c", rr[0].data[z], ((z + 1) % 16) ? ' ' : '\n');
-    }
-    printf("\n");
-#endif
+    OSSL_TRACE_BEGIN(TLS) {
+        BIO_printf(trc_out, "dec %lu\n", (unsigned long)rr[0].length);
+        BIO_dump_indent(trc_out, rr[0].data, rr[0].length, 4);
+    } OSSL_TRACE_END(TLS);
 
     /* r->length is now the compressed data plus mac */
     if ((sess != NULL) &&
@@ -631,6 +708,8 @@ int ssl3_get_record(SSL *s)
         return -1;
     }
 
+ skip_decryption:
+
     for (j = 0; j < num_recs; j++) {
         thisrr = &rr[j];
 
@@ -648,7 +727,9 @@ int ssl3_get_record(SSL *s)
             }
         }
 
-        if (SSL_IS_TLS13(s) && s->enc_read_ctx != NULL) {
+        if (SSL_IS_TLS13(s)
+                && s->enc_read_ctx != NULL
+                && thisrr->type != SSL3_RT_ALERT) {
             size_t end;
 
             if (thisrr->length == 0
@@ -690,7 +771,7 @@ int ssl3_get_record(SSL *s)
             return -1;
         }
 
-        if (thisrr->length > SSL3_RT_MAX_PLAIN_LENGTH) {
+        if (thisrr->length > SSL3_RT_MAX_PLAIN_LENGTH && !BIO_get_ktls_recv(s->rbio)) {
             SSLfatal(s, SSL_AD_RECORD_OVERFLOW, SSL_F_SSL3_GET_RECORD,
                      SSL_R_DATA_LENGTH_TOO_LONG);
             return -1;
@@ -698,7 +779,8 @@ int ssl3_get_record(SSL *s)
 
         /* If received packet overflows current Max Fragment Length setting */
         if (s->session != NULL && USE_MAX_FRAGMENT_LENGTH_EXT(s->session)
-                && thisrr->length > GET_MAX_FRAGMENT_LENGTH(s->session)) {
+                && thisrr->length > GET_MAX_FRAGMENT_LENGTH(s->session)
+                && !BIO_get_ktls_recv(s->rbio)) {
             SSLfatal(s, SSL_AD_RECORD_OVERFLOW, SSL_F_SSL3_GET_RECORD,
                      SSL_R_DATA_LENGTH_TOO_LONG);
             return -1;
@@ -788,7 +870,7 @@ int ssl3_do_compress(SSL *ssl, SSL3_RECORD *wr)
  * SSLfatal() for internal errors, but not otherwise.
  *
  * Returns:
- *   0: (in non-constant time) if the record is publically invalid (i.e. too
+ *   0: (in non-constant time) if the record is publicly invalid (i.e. too
  *       short etc).
  *   1: if the record's padding is valid / the encryption was successful.
  *   -1: if the record's padding is invalid or, if sending, an internal error
@@ -879,7 +961,7 @@ int ssl3_enc(SSL *s, SSL3_RECORD *inrecs, size_t n_recs, int sending)
  * internal errors, but not otherwise.
  *
  * Returns:
- *   0: (in non-constant time) if the record is publically invalid (i.e. too
+ *   0: (in non-constant time) if the record is publicly invalid (i.e. too
  *       short etc).
  *   1: if the record's padding is valid / the encryption was successful.
  *   -1: if the record's padding/AEAD-authenticator is invalid or, if sending,
@@ -933,7 +1015,7 @@ int tls1_enc(SSL *s, SSL3_RECORD *recs, size_t n_recs, int sending)
                         SSLfatal(s, SSL_AD_INTERNAL_ERROR, SSL_F_TLS1_ENC,
                                  ERR_R_INTERNAL_ERROR);
                         return -1;
-                    } else if (ssl_randbytes(s, recs[ctr].input, ivlen) <= 0) {
+                    } else if (RAND_bytes(recs[ctr].input, ivlen) <= 0) {
                         SSLfatal(s, SSL_AD_INTERNAL_ERROR, SSL_F_TLS1_ENC,
                                  ERR_R_INTERNAL_ERROR);
                         return -1;
@@ -1026,7 +1108,7 @@ int tls1_enc(SSL *s, SSL3_RECORD *recs, size_t n_recs, int sending)
             } else if ((bs != 1) && sending) {
                 padnum = bs - (reclen[ctr] % bs);
 
-                /* Add weird padding of upto 256 bytes */
+                /* Add weird padding of up to 256 bytes */
 
                 if (padnum > MAX_PADDING) {
                     SSLfatal(s, SSL_AD_INTERNAL_ERROR, SSL_F_TLS1_ENC,
@@ -1142,11 +1224,11 @@ int n_ssl3_mac(SSL *ssl, SSL3_RECORD *rec, unsigned char *md, int sending)
     int t;
 
     if (sending) {
-        mac_sec = &(ssl->s3->write_mac_secret[0]);
+        mac_sec = &(ssl->s3.write_mac_secret[0]);
         seq = RECORD_LAYER_get_write_sequence(&ssl->rlayer);
         hash = ssl->write_hash;
     } else {
-        mac_sec = &(ssl->s3->read_mac_secret[0]);
+        mac_sec = &(ssl->s3.read_mac_secret[0]);
         seq = RECORD_LAYER_get_read_sequence(&ssl->rlayer);
         hash = ssl->read_hash;
     }
@@ -1217,7 +1299,7 @@ int n_ssl3_mac(SSL *ssl, SSL3_RECORD *rec, unsigned char *md, int sending)
             || EVP_DigestUpdate(md_ctx, ssl3_pad_2, npad) <= 0
             || EVP_DigestUpdate(md_ctx, md, md_size) <= 0
             || EVP_DigestFinal_ex(md_ctx, md, &md_size_u) <= 0) {
-            EVP_MD_CTX_reset(md_ctx);
+            EVP_MD_CTX_free(md_ctx);
             return 0;
         }
 
@@ -1258,8 +1340,10 @@ int tls1_mac(SSL *ssl, SSL3_RECORD *rec, unsigned char *md, int sending)
         mac_ctx = hash;
     } else {
         hmac = EVP_MD_CTX_new();
-        if (hmac == NULL || !EVP_MD_CTX_copy(hmac, hash))
+        if (hmac == NULL || !EVP_MD_CTX_copy(hmac, hash)) {
+            EVP_MD_CTX_free(hmac);
             return 0;
+        }
         mac_ctx = hmac;
     }
 
@@ -1293,8 +1377,8 @@ int tls1_mac(SSL *ssl, SSL3_RECORD *rec, unsigned char *md, int sending)
                                    md, &md_size,
                                    header, rec->input,
                                    rec->length + md_size, rec->orig_len,
-                                   ssl->s3->read_mac_secret,
-                                   ssl->s3->read_mac_secret_size, 0) <= 0) {
+                                   ssl->s3.read_mac_secret,
+                                   ssl->s3.read_mac_secret_size, 0) <= 0) {
             EVP_MD_CTX_free(hmac);
             return 0;
         }
@@ -1310,22 +1394,12 @@ int tls1_mac(SSL *ssl, SSL3_RECORD *rec, unsigned char *md, int sending)
 
     EVP_MD_CTX_free(hmac);
 
-#ifdef SSL_DEBUG
-    fprintf(stderr, "seq=");
-    {
-        int z;
-        for (z = 0; z < 8; z++)
-            fprintf(stderr, "%02X ", seq[z]);
-        fprintf(stderr, "\n");
-    }
-    fprintf(stderr, "rec=");
-    {
-        size_t z;
-        for (z = 0; z < rec->length; z++)
-            fprintf(stderr, "%02X ", rec->data[z]);
-        fprintf(stderr, "\n");
-    }
-#endif
+    OSSL_TRACE_BEGIN(TLS) {
+        BIO_printf(trc_out, "seq:\n");
+        BIO_dump_indent(trc_out, seq, 8, 4);
+        BIO_printf(trc_out, "rec:\n");
+        BIO_dump_indent(trc_out, rec->data, rec->length, 4);
+    } OSSL_TRACE_END(TLS);
 
     if (!SSL_IS_DTLS(ssl)) {
         for (i = 7; i >= 0; i--) {
@@ -1334,14 +1408,10 @@ int tls1_mac(SSL *ssl, SSL3_RECORD *rec, unsigned char *md, int sending)
                 break;
         }
     }
-#ifdef SSL_DEBUG
-    {
-        unsigned int z;
-        for (z = 0; z < md_size; z++)
-            fprintf(stderr, "%02X ", md[z]);
-        fprintf(stderr, "\n");
-    }
-#endif
+    OSSL_TRACE_BEGIN(TLS) {
+        BIO_printf(trc_out, "md:\n");
+        BIO_dump_indent(trc_out, md, md_size, 4);
+    } OSSL_TRACE_END(TLS);
     return 1;
 }
 
@@ -1618,7 +1688,7 @@ int dtls1_process_record(SSL *s, DTLS1_BITMAP *bitmap)
     enc_err = s->method->ssl3_enc->enc(s, rr, 1, 0);
     /*-
      * enc_err is:
-     *    0: (in non-constant time) if the record is publically invalid.
+     *    0: (in non-constant time) if the record is publicly invalid.
      *    1: if the padding is valid
      *   -1: if the padding is invalid
      */
@@ -1632,15 +1702,10 @@ int dtls1_process_record(SSL *s, DTLS1_BITMAP *bitmap)
         RECORD_LAYER_reset_packet_length(&s->rlayer);
         return 0;
     }
-#ifdef SSL_DEBUG
-    printf("dec %ld\n", rr->length);
-    {
-        size_t z;
-        for (z = 0; z < rr->length; z++)
-            printf("%02X%c", rr->data[z], ((z + 1) % 16) ? ' ' : '\n');
-    }
-    printf("\n");
-#endif
+    OSSL_TRACE_BEGIN(TLS) {
+        BIO_printf(trc_out, "dec %zd\n", rr->length);
+        BIO_dump_indent(trc_out, rr->data, rr->length, 4);
+    } OSSL_TRACE_END(TLS);
 
     /* r->length is now the compressed data plus mac */
     if ((sess != NULL) && !SSL_READ_ETM(s) &&
@@ -1740,11 +1805,11 @@ int dtls1_process_record(SSL *s, DTLS1_BITMAP *bitmap)
     rr->off = 0;
     /*-
      * So at this point the following is true
-     * ssl->s3->rrec.type   is the type of record
-     * ssl->s3->rrec.length == number of bytes in record
-     * ssl->s3->rrec.off    == offset to first valid byte
-     * ssl->s3->rrec.data   == where to take bytes from, increment
-     *                         after use :-).
+     * ssl->s3.rrec.type   is the type of record
+     * ssl->s3.rrec.length == number of bytes in record
+     * ssl->s3.rrec.off    == offset to first valid byte
+     * ssl->s3.rrec.data   == where to take bytes from, increment
+     *                        after use :-).
      */
 
     /* we have pulled in a full packet so zero things */
@@ -1768,9 +1833,9 @@ int dtls1_process_record(SSL *s, DTLS1_BITMAP *bitmap)
  * It will return <= 0 if more data is needed, normally due to an error
  * or non-blocking IO.
  * When it finishes, one packet has been decoded and can be found in
- * ssl->s3->rrec.type    - is the type of record
- * ssl->s3->rrec.data,   - data
- * ssl->s3->rrec.length, - number of bytes
+ * ssl->s3.rrec.type    - is the type of record
+ * ssl->s3.rrec.data    - data
+ * ssl->s3.rrec.length  - number of bytes
  */
 /* used only by dtls1_read_bytes */
 int dtls1_get_record(SSL *s)
@@ -1841,12 +1906,17 @@ int dtls1_get_record(SSL *s)
         p += 6;
 
         n2s(p, rr->length);
+        rr->read = 0;
 
-        /* Lets check version */
-        if (!s->first_packet) {
+        /*
+         * Lets check the version. We tolerate alerts that don't have the exact
+         * version number (e.g. because of protocol version errors)
+         */
+        if (!s->first_packet && rr->type != SSL3_RT_ALERT) {
             if (version != s->version) {
                 /* unexpected version, silently discard */
                 rr->length = 0;
+                rr->read = 1;
                 RECORD_LAYER_reset_packet_length(&s->rlayer);
                 goto again;
             }
@@ -1855,6 +1925,7 @@ int dtls1_get_record(SSL *s)
         if ((version & 0xff00) != (s->version & 0xff00)) {
             /* wrong version, silently discard record */
             rr->length = 0;
+            rr->read = 1;
             RECORD_LAYER_reset_packet_length(&s->rlayer);
             goto again;
         }
@@ -1862,6 +1933,7 @@ int dtls1_get_record(SSL *s)
         if (rr->length > SSL3_RT_MAX_ENCRYPTED_LENGTH) {
             /* record too long, silently discard it */
             rr->length = 0;
+            rr->read = 1;
             RECORD_LAYER_reset_packet_length(&s->rlayer);
             goto again;
         }
@@ -1871,6 +1943,7 @@ int dtls1_get_record(SSL *s)
                 && rr->length > GET_MAX_FRAGMENT_LENGTH(s->session)) {
             /* record too long, silently discard it */
             rr->length = 0;
+            rr->read = 1;
             RECORD_LAYER_reset_packet_length(&s->rlayer);
             goto again;
         }
@@ -1892,6 +1965,7 @@ int dtls1_get_record(SSL *s)
                 return -1;
             }
             rr->length = 0;
+            rr->read = 1;
             RECORD_LAYER_reset_packet_length(&s->rlayer);
             goto again;
         }
@@ -1922,6 +1996,7 @@ int dtls1_get_record(SSL *s)
          */
         if (!dtls1_record_replay_check(s, bitmap)) {
             rr->length = 0;
+            rr->read = 1;
             RECORD_LAYER_reset_packet_length(&s->rlayer); /* dump this record */
             goto again;         /* get another record */
         }
@@ -1930,8 +2005,10 @@ int dtls1_get_record(SSL *s)
 #endif
 
     /* just read a 0 length packet */
-    if (rr->length == 0)
+    if (rr->length == 0) {
+        rr->read = 1;
         goto again;
+    }
 
     /*
      * If this record is from the next epoch (either HM or ALERT), and a
@@ -1948,6 +2025,7 @@ int dtls1_get_record(SSL *s)
             }
         }
         rr->length = 0;
+        rr->read = 1;
         RECORD_LAYER_reset_packet_length(&s->rlayer);
         goto again;
     }
@@ -1958,10 +2036,36 @@ int dtls1_get_record(SSL *s)
             return -1;
         }
         rr->length = 0;
+        rr->read = 1;
         RECORD_LAYER_reset_packet_length(&s->rlayer); /* dump this record */
         goto again;             /* get another record */
     }
 
     return 1;
 
+}
+
+int dtls_buffer_listen_record(SSL *s, size_t len, unsigned char *seq, size_t off)
+{
+    SSL3_RECORD *rr;
+
+    rr = RECORD_LAYER_get_rrec(&s->rlayer);
+    memset(rr, 0, sizeof(SSL3_RECORD));
+
+    rr->length = len;
+    rr->type = SSL3_RT_HANDSHAKE;
+    memcpy(rr->seq_num, seq, sizeof(rr->seq_num));
+    rr->off = off;
+
+    s->rlayer.packet = RECORD_LAYER_get_rbuf(&s->rlayer)->buf;
+    s->rlayer.packet_length = DTLS1_RT_HEADER_LENGTH + len;
+    rr->data = s->rlayer.packet + DTLS1_RT_HEADER_LENGTH;
+
+    if (dtls1_buffer_record(s, &(s->rlayer.d->processed_rcds),
+                            SSL3_RECORD_get_seq_num(s->rlayer.rrec)) <= 0) {
+        /* SSLfatal() already called */
+        return 0;
+    }
+
+    return 1;
 }

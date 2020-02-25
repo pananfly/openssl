@@ -1,7 +1,7 @@
 #!/usr/bin/env perl
-# Copyright 2017 The OpenSSL Project Authors. All Rights Reserved.
+# Copyright 2017-2018 The OpenSSL Project Authors. All Rights Reserved.
 #
-# Licensed under the OpenSSL license (the "License").  You may not use
+# Licensed under the Apache License 2.0 (the "License").  You may not use
 # this file except in compliance with the License.  You can obtain a copy
 # in the file LICENSE in the source distribution or at
 # https://www.openssl.org/source/license.html
@@ -50,9 +50,10 @@
 #	improved by 14% by replacing rotates with double-precision
 #	shift with same register as source and destination.
 
-$flavour = shift;
-$output  = shift;
-if ($flavour =~ /\./) { $output = $flavour; undef $flavour; }
+# $output is the last argument if it looks like a file (it has an extension)
+# $flavour is the first argument if it doesn't look like a file
+$output = $#ARGV >= 0 && $ARGV[$#ARGV] =~ m|\.\w+$| ? pop : undef;
+$flavour = $#ARGV >= 0 && $ARGV[0] !~ m|\.| ? shift : undef;
 
 $win64=0; $win64=1 if ($flavour =~ /[nm]asm|mingw64/ || $output =~ /\.asm$/);
 
@@ -61,7 +62,8 @@ $0 =~ m/(.*[\/\\])[^\/\\]+$/; $dir=$1;
 ( $xlate="${dir}../../perlasm/x86_64-xlate.pl" and -f $xlate) or
 die "can't locate x86_64-xlate.pl";
 
-open OUT,"| \"$^X\" \"$xlate\" $flavour \"$output\"";
+open OUT,"| \"$^X\" \"$xlate\" $flavour \"$output\""
+    or die "can't call $xlate: $!";
 *STDOUT=*OUT;
 
 my @A = map([ 8*$_-100, 8*($_+1)-100, 8*($_+2)-100,
@@ -81,9 +83,10 @@ my @rhotates = ([  0,  1, 62, 28, 27 ],
 $code.=<<___;
 .text
 
-.type	__KeccakF1600,\@function
+.type	__KeccakF1600,\@abi-omnipotent
 .align	32
 __KeccakF1600:
+.cfi_startproc
 	mov	$A[4][0](%rdi),@C[0]
 	mov	$A[4][1](%rdi),@C[1]
 	mov	$A[4][2](%rdi),@C[2]
@@ -342,10 +345,10 @@ $code.=<<___;
 
 	lea	-192($iotas),$iotas	# rewind iotas
 	ret
+.cfi_endproc
 .size	__KeccakF1600,.-__KeccakF1600
 
-.globl	KeccakF1600
-.type	KeccakF1600,\@function
+.type	KeccakF1600,\@abi-omnipotent
 .align	32
 KeccakF1600:
 .cfi_startproc
@@ -410,7 +413,7 @@ ___
      ($A_flat,$inp) = ("%r8","%r9");
 $code.=<<___;
 .globl	SHA3_absorb
-.type	SHA3_absorb,\@function
+.type	SHA3_absorb,\@function,4
 .align	32
 SHA3_absorb:
 .cfi_startproc
@@ -505,7 +508,7 @@ ___
 
 $code.=<<___;
 .globl	SHA3_squeeze
-.type	SHA3_squeeze,\@function
+.type	SHA3_squeeze,\@function,4
 .align	32
 SHA3_squeeze:
 .cfi_startproc

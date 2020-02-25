@@ -1,7 +1,7 @@
 #! /usr/bin/env perl
-# Copyright 2016 The OpenSSL Project Authors. All Rights Reserved.
+# Copyright 2016-2018 The OpenSSL Project Authors. All Rights Reserved.
 #
-# Licensed under the OpenSSL license (the "License").  You may not use
+# Licensed under the Apache License 2.0 (the "License").  You may not use
 # this file except in compliance with the License.  You can obtain a copy
 # in the file LICENSE in the source distribution or at
 # https://www.openssl.org/source/license.html
@@ -45,7 +45,7 @@
 # Haswell	1.14/+175%	1.11		0.65
 # Skylake[-X]	1.13/+120%	0.96		0.51	[0.35]
 # Silvermont	2.83/+95%	-
-# Knights L	3.60/?		1.65		1.10	?
+# Knights L	3.60/?		1.65		1.10	0.41(***)
 # Goldmont	1.70/+180%	-
 # VIA Nano	1.82/+150%	-
 # Sledgehammer	1.38/+160%	-
@@ -60,10 +60,13 @@
 #	Core processors, 50-30%, less newer processor is, but slower on
 #	contemporary ones, for example almost 2x slower on Atom, and as
 #	former are naturally disappearing, SSE2 is deemed unnecessary;
+# (***)	strangely enough performance seems to vary from core to core,
+#	listed result is best case;
 
-$flavour = shift;
-$output  = shift;
-if ($flavour =~ /\./) { $output = $flavour; undef $flavour; }
+# $output is the last argument if it looks like a file (it has an extension)
+# $flavour is the first argument if it doesn't look like a file
+$output = $#ARGV >= 0 && $ARGV[$#ARGV] =~ m|\.\w+$| ? pop : undef;
+$flavour = $#ARGV >= 0 && $ARGV[0] !~ m|\.| ? shift : undef;
 
 $win64=0; $win64=1 if ($flavour =~ /[nm]asm|mingw64/ || $output =~ /\.asm$/);
 
@@ -92,7 +95,8 @@ if (!$avx && `$ENV{CC} -v 2>&1` =~ /((?:^clang|LLVM) version|.*based on LLVM) ([
 	$avx = ($2>=3.0) + ($2>3.0);
 }
 
-open OUT,"| \"$^X\" \"$xlate\" $flavour \"$output\"";
+open OUT,"| \"$^X\" \"$xlate\" $flavour \"$output\""
+    or die "can't call $xlate: $!";
 *STDOUT=*OUT;
 
 my ($ctx,$inp,$len,$padbit)=("%rdi","%rsi","%rdx","%rcx");
@@ -166,6 +170,7 @@ $code.=<<___;
 .type	poly1305_init,\@function,3
 .align	32
 poly1305_init:
+.cfi_startproc
 	xor	%rax,%rax
 	mov	%rax,0($ctx)		# initialize hash value
 	mov	%rax,8($ctx)
@@ -217,6 +222,7 @@ $code.=<<___;
 	mov	\$1,%eax
 .Lno_key:
 	ret
+.cfi_endproc
 .size	poly1305_init,.-poly1305_init
 
 .type	poly1305_blocks,\@function,4
@@ -296,6 +302,7 @@ $code.=<<___;
 .type	poly1305_emit,\@function,3
 .align	32
 poly1305_emit:
+.cfi_startproc
 .Lemit:
 	mov	0($ctx),%r8	# load hash value
 	mov	8($ctx),%r9
@@ -316,6 +323,7 @@ poly1305_emit:
 	mov	%rcx,8($mac)
 
 	ret
+.cfi_endproc
 .size	poly1305_emit,.-poly1305_emit
 ___
 if ($avx) {
@@ -340,15 +348,18 @@ $code.=<<___;
 .type	__poly1305_block,\@abi-omnipotent
 .align	32
 __poly1305_block:
+.cfi_startproc
 ___
 	&poly1305_iteration();
 $code.=<<___;
 	ret
+.cfi_endproc
 .size	__poly1305_block,.-__poly1305_block
 
 .type	__poly1305_init_avx,\@abi-omnipotent
 .align	32
 __poly1305_init_avx:
+.cfi_startproc
 	mov	$r0,$h0
 	mov	$r1,$h1
 	xor	$h2,$h2
@@ -506,6 +517,7 @@ __poly1305_init_avx:
 
 	lea	-48-64($ctx),$ctx	# size [de-]optimization
 	ret
+.cfi_endproc
 .size	__poly1305_init_avx,.-__poly1305_init_avx
 
 .type	poly1305_blocks_avx,\@function,4
@@ -1371,6 +1383,7 @@ $code.=<<___;
 .type	poly1305_emit_avx,\@function,3
 .align	32
 poly1305_emit_avx:
+.cfi_startproc
 	cmpl	\$0,20($ctx)	# is_base2_26?
 	je	.Lemit
 
@@ -1421,6 +1434,7 @@ poly1305_emit_avx:
 	mov	%rcx,8($mac)
 
 	ret
+.cfi_endproc
 .size	poly1305_emit_avx,.-poly1305_emit_avx
 ___
 
@@ -2160,33 +2174,33 @@ $code.=<<___;
 	vmovdqa		96(%rcx),%y#$T2		# .Lpermd_avx2
 
 	# expand pre-calculated table
-	vmovdqu32	`16*0-64`($ctx),${R0}{%k2}{z}
+	vmovdqu		`16*0-64`($ctx),%x#$D0	# will become expanded ${R0}
 	and		\$-512,%rsp
-	vmovdqu32	`16*1-64`($ctx),${R1}{%k2}{z}
+	vmovdqu		`16*1-64`($ctx),%x#$D1	# will become ... ${R1}
 	mov		\$0x20,%rax
-	vmovdqu32	`16*2-64`($ctx),${S1}{%k2}{z}
-	vmovdqu32	`16*3-64`($ctx),${R2}{%k2}{z}
-	vmovdqu32	`16*4-64`($ctx),${S2}{%k2}{z}
-	vmovdqu32	`16*5-64`($ctx),${R3}{%k2}{z}
-	vmovdqu32	`16*6-64`($ctx),${S3}{%k2}{z}
-	vmovdqu32	`16*7-64`($ctx),${R4}{%k2}{z}
-	vmovdqu32	`16*8-64`($ctx),${S4}{%k2}{z}
-	vpermd		$R0,$T2,$R0		# 00003412 -> 14243444
+	vmovdqu		`16*2-64`($ctx),%x#$T0	# ... ${S1}
+	vmovdqu		`16*3-64`($ctx),%x#$D2	# ... ${R2}
+	vmovdqu		`16*4-64`($ctx),%x#$T1	# ... ${S2}
+	vmovdqu		`16*5-64`($ctx),%x#$D3	# ... ${R3}
+	vmovdqu		`16*6-64`($ctx),%x#$T3	# ... ${S3}
+	vmovdqu		`16*7-64`($ctx),%x#$D4	# ... ${R4}
+	vmovdqu		`16*8-64`($ctx),%x#$T4	# ... ${S4}
+	vpermd		$D0,$T2,$R0		# 00003412 -> 14243444
 	vpbroadcastq	64(%rcx),$MASK		# .Lmask26
-	vpermd		$R1,$T2,$R1
-	vpermd		$S1,$T2,$S1
-	vpermd		$R2,$T2,$R2
+	vpermd		$D1,$T2,$R1
+	vpermd		$T0,$T2,$S1
+	vpermd		$D2,$T2,$R2
 	vmovdqa64	$R0,0x00(%rsp){%k2}	# save in case $len%128 != 0
 	 vpsrlq		\$32,$R0,$T0		# 14243444 -> 01020304
-	vpermd		$S2,$T2,$S2
+	vpermd		$T1,$T2,$S2
 	vmovdqu64	$R1,0x00(%rsp,%rax){%k2}
 	 vpsrlq		\$32,$R1,$T1
-	vpermd		$R3,$T2,$R3
+	vpermd		$D3,$T2,$R3
 	vmovdqa64	$S1,0x40(%rsp){%k2}
-	vpermd		$S3,$T2,$S3
-	vpermd		$R4,$T2,$R4
+	vpermd		$T3,$T2,$S3
+	vpermd		$D4,$T2,$R4
 	vmovdqu64	$R2,0x40(%rsp,%rax){%k2}
-	vpermd		$S4,$T2,$S4
+	vpermd		$T4,$T2,$S4
 	vmovdqa64	$S2,0x80(%rsp){%k2}
 	vmovdqu64	$R3,0x80(%rsp,%rax){%k2}
 	vmovdqa64	$S3,0xc0(%rsp){%k2}
@@ -2739,6 +2753,7 @@ $code.=<<___;
 .type	poly1305_init_base2_44,\@function,3
 .align	32
 poly1305_init_base2_44:
+.cfi_startproc
 	xor	%rax,%rax
 	mov	%rax,0($ctx)		# initialize hash value
 	mov	%rax,8($ctx)
@@ -2780,6 +2795,7 @@ ___
 $code.=<<___;
 	mov	\$1,%eax
 	ret
+.cfi_endproc
 .size	poly1305_init_base2_44,.-poly1305_init_base2_44
 ___
 {
@@ -2791,6 +2807,7 @@ $code.=<<___;
 .type	poly1305_blocks_vpmadd52,\@function,4
 .align	32
 poly1305_blocks_vpmadd52:
+.cfi_startproc
 	shr	\$4,$len
 	jz	.Lno_data_vpmadd52		# too short
 
@@ -2897,6 +2914,7 @@ poly1305_blocks_vpmadd52:
 
 .Lno_data_vpmadd52:
 	ret
+.cfi_endproc
 .size	poly1305_blocks_vpmadd52,.-poly1305_blocks_vpmadd52
 ___
 }
@@ -2914,6 +2932,7 @@ $code.=<<___;
 .type	poly1305_blocks_vpmadd52_4x,\@function,4
 .align	32
 poly1305_blocks_vpmadd52_4x:
+.cfi_startproc
 	shr	\$4,$len
 	jz	.Lno_data_vpmadd52_4x		# too short
 
@@ -3338,6 +3357,7 @@ poly1305_blocks_vpmadd52_4x:
 
 .Lno_data_vpmadd52_4x:
 	ret
+.cfi_endproc
 .size	poly1305_blocks_vpmadd52_4x,.-poly1305_blocks_vpmadd52_4x
 ___
 }
@@ -3356,6 +3376,7 @@ $code.=<<___;
 .type	poly1305_blocks_vpmadd52_8x,\@function,4
 .align	32
 poly1305_blocks_vpmadd52_8x:
+.cfi_startproc
 	shr	\$4,$len
 	jz	.Lno_data_vpmadd52_8x		# too short
 
@@ -3711,6 +3732,7 @@ $code.=<<___;
 
 .Lno_data_vpmadd52_8x:
 	ret
+.cfi_endproc
 .size	poly1305_blocks_vpmadd52_8x,.-poly1305_blocks_vpmadd52_8x
 ___
 }
@@ -3718,6 +3740,7 @@ $code.=<<___;
 .type	poly1305_emit_base2_44,\@function,3
 .align	32
 poly1305_emit_base2_44:
+.cfi_startproc
 	mov	0($ctx),%r8	# load hash value
 	mov	8($ctx),%r9
 	mov	16($ctx),%r10
@@ -3748,6 +3771,7 @@ poly1305_emit_base2_44:
 	mov	%rcx,8($mac)
 
 	ret
+.cfi_endproc
 .size	poly1305_emit_base2_44,.-poly1305_emit_base2_44
 ___
 }	}	}
@@ -3785,11 +3809,118 @@ $code.=<<___;
 .quad	0x3ffffffffff,0x3ffffffffff,0x3ffffffffff,0x3ffffffffff
 ___
 }
-
 $code.=<<___;
 .asciz	"Poly1305 for x86_64, CRYPTOGAMS by <appro\@openssl.org>"
 .align	16
 ___
+
+{	# chacha20-poly1305 helpers
+my ($out,$inp,$otp,$len)=$win64 ? ("%rcx","%rdx","%r8", "%r9") :  # Win64 order
+                                  ("%rdi","%rsi","%rdx","%rcx");  # Unix order
+$code.=<<___;
+.globl	xor128_encrypt_n_pad
+.type	xor128_encrypt_n_pad,\@abi-omnipotent
+.align	16
+xor128_encrypt_n_pad:
+.cfi_startproc
+	sub	$otp,$inp
+	sub	$otp,$out
+	mov	$len,%r10		# put len aside
+	shr	\$4,$len		# len / 16
+	jz	.Ltail_enc
+	nop
+.Loop_enc_xmm:
+	movdqu	($inp,$otp),%xmm0
+	pxor	($otp),%xmm0
+	movdqu	%xmm0,($out,$otp)
+	movdqa	%xmm0,($otp)
+	lea	16($otp),$otp
+	dec	$len
+	jnz	.Loop_enc_xmm
+
+	and	\$15,%r10		# len % 16
+	jz	.Ldone_enc
+
+.Ltail_enc:
+	mov	\$16,$len
+	sub	%r10,$len
+	xor	%eax,%eax
+.Loop_enc_byte:
+	mov	($inp,$otp),%al
+	xor	($otp),%al
+	mov	%al,($out,$otp)
+	mov	%al,($otp)
+	lea	1($otp),$otp
+	dec	%r10
+	jnz	.Loop_enc_byte
+
+	xor	%eax,%eax
+.Loop_enc_pad:
+	mov	%al,($otp)
+	lea	1($otp),$otp
+	dec	$len
+	jnz	.Loop_enc_pad
+
+.Ldone_enc:
+	mov	$otp,%rax
+	ret
+.cfi_endproc
+.size	xor128_encrypt_n_pad,.-xor128_encrypt_n_pad
+
+.globl	xor128_decrypt_n_pad
+.type	xor128_decrypt_n_pad,\@abi-omnipotent
+.align	16
+xor128_decrypt_n_pad:
+.cfi_startproc
+	sub	$otp,$inp
+	sub	$otp,$out
+	mov	$len,%r10		# put len aside
+	shr	\$4,$len		# len / 16
+	jz	.Ltail_dec
+	nop
+.Loop_dec_xmm:
+	movdqu	($inp,$otp),%xmm0
+	movdqa	($otp),%xmm1
+	pxor	%xmm0,%xmm1
+	movdqu	%xmm1,($out,$otp)
+	movdqa	%xmm0,($otp)
+	lea	16($otp),$otp
+	dec	$len
+	jnz	.Loop_dec_xmm
+
+	pxor	%xmm1,%xmm1
+	and	\$15,%r10		# len % 16
+	jz	.Ldone_dec
+
+.Ltail_dec:
+	mov	\$16,$len
+	sub	%r10,$len
+	xor	%eax,%eax
+	xor	%r11,%r11
+.Loop_dec_byte:
+	mov	($inp,$otp),%r11b
+	mov	($otp),%al
+	xor	%r11b,%al
+	mov	%al,($out,$otp)
+	mov	%r11b,($otp)
+	lea	1($otp),$otp
+	dec	%r10
+	jnz	.Loop_dec_byte
+
+	xor	%eax,%eax
+.Loop_dec_pad:
+	mov	%al,($otp)
+	lea	1($otp),$otp
+	dec	$len
+	jnz	.Loop_dec_pad
+
+.Ldone_dec:
+	mov	$otp,%rax
+	ret
+.cfi_endproc
+.size	xor128_decrypt_n_pad,.-xor128_decrypt_n_pad
+___
+}
 
 # EXCEPTION_DISPOSITION handler (EXCEPTION_RECORD *rec,ULONG64 frame,
 #		CONTEXT *context,DISPATCHER_CONTEXT *disp)

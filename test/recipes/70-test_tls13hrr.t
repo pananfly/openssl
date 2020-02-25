@@ -1,7 +1,7 @@
 #! /usr/bin/env perl
-# Copyright 2017 The OpenSSL Project Authors. All Rights Reserved.
+# Copyright 2017-2018 The OpenSSL Project Authors. All Rights Reserved.
 #
-# Licensed under the OpenSSL license (the "License").  You may not use
+# Licensed under the Apache License 2.0 (the "License").  You may not use
 # this file except in compliance with the License.  You can obtain a copy
 # in the file LICENSE in the source distribution or at
 # https://www.openssl.org/source/license.html
@@ -15,7 +15,7 @@ my $test_name = "test_tls13hrr";
 setup($test_name);
 
 plan skip_all => "TLSProxy isn't usable on $^O"
-    if $^O =~ /^(VMS|MSWin32)$/;
+    if $^O =~ /^(VMS)$/;
 
 plan skip_all => "$test_name needs the dynamic engine feature enabled"
     if disabled("engine") || disabled("dynamic-engine");
@@ -43,7 +43,11 @@ use constant {
 #Test 1: A client should fail if the server changes the ciphersuite between the
 #        HRR and the SH
 $proxy->filter(\&hrr_filter);
-$proxy->serverflags("-curves P-256");
+if (disabled("ec")) {
+    $proxy->serverflags("-curves ffdhe3072");
+} else {
+    $proxy->serverflags("-curves P-256");
+}
 my $testtype = CHANGE_HRR_CIPHERSUITE;
 $proxy->start() or plan skip_all => "Unable to start up Proxy for tests";
 plan tests => 2;
@@ -52,8 +56,12 @@ ok(TLSProxy::Message->fail(), "Server ciphersuite changes");
 #Test 2: It is an error if the client changes the offered ciphersuites so that
 #        we end up selecting a different ciphersuite between HRR and the SH
 $proxy->clear();
-$proxy->serverflags("-curves P-256");
-$proxy->ciphers("TLS13-AES-128-GCM-SHA256:TLS13-AES-256-GCM-SHA384");
+if (disabled("ec")) {
+    $proxy->serverflags("-curves ffdhe3072");
+} else {
+    $proxy->serverflags("-curves P-256");
+}
+$proxy->ciphersuitess("TLS_AES_128_GCM_SHA256:TLS_AES_256_GCM_SHA384");
 $testtype = CHANGE_CH1_CIPHERSUITE;
 $proxy->start();
 ok(TLSProxy::Message->fail(), "Client ciphersuite changes");
@@ -85,8 +93,7 @@ sub hrr_filter
 
     my $ch1 = ${$proxy->message_list}[0];
 
-    # The server prefers TLS13-AES-256-GCM-SHA384 so it will pick that next
-    # time around
+    # The server will always pick TLS_AES_256_GCM_SHA384
     my @ciphersuites = (TLSProxy::Message::CIPHER_TLS13_AES_128_GCM_SHA256);
     $ch1->ciphersuite_len(2 * scalar @ciphersuites);
     $ch1->ciphersuites(\@ciphersuites);

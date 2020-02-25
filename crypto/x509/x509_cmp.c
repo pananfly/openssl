@@ -1,7 +1,7 @@
 /*
- * Copyright 1995-2017 The OpenSSL Project Authors. All Rights Reserved.
+ * Copyright 1995-2018 The OpenSSL Project Authors. All Rights Reserved.
  *
- * Licensed under the OpenSSL license (the "License").  You may not use
+ * Licensed under the Apache License 2.0 (the "License").  You may not use
  * this file except in compliance with the License.  You can obtain a copy
  * in the file LICENSE in the source distribution or at
  * https://www.openssl.org/source/license.html
@@ -13,7 +13,8 @@
 #include <openssl/objects.h>
 #include <openssl/x509.h>
 #include <openssl/x509v3.h>
-#include "internal/x509_int.h"
+#include <openssl/core_names.h>
+#include "crypto/x509.h"
 
 int X509_issuer_and_serial_cmp(const X509 *a, const X509 *b)
 {
@@ -173,7 +174,7 @@ int X509_NAME_cmp(const X509_NAME *a, const X509_NAME *b)
 
     ret = a->canon_enclen - b->canon_enclen;
 
-    if (ret)
+    if (ret != 0 || a->canon_enclen == 0)
         return ret;
 
     return memcmp(a->canon_enc, b->canon_enc, a->canon_enclen);
@@ -205,23 +206,26 @@ unsigned long X509_NAME_hash(X509_NAME *x)
 
 unsigned long X509_NAME_hash_old(X509_NAME *x)
 {
+    EVP_MD *md5 = EVP_MD_fetch(NULL, OSSL_DIGEST_NAME_MD5, "-fips");
     EVP_MD_CTX *md_ctx = EVP_MD_CTX_new();
     unsigned long ret = 0;
     unsigned char md[16];
 
-    if (md_ctx == NULL)
-        return ret;
+    if (md5 == NULL || md_ctx == NULL)
+        goto end;
 
     /* Make sure X509_NAME structure contains valid cached encoding */
     i2d_X509_NAME(x, NULL);
-    EVP_MD_CTX_set_flags(md_ctx, EVP_MD_CTX_FLAG_NON_FIPS_ALLOW);
-    if (EVP_DigestInit_ex(md_ctx, EVP_md5(), NULL)
+    if (EVP_DigestInit_ex(md_ctx, md5, NULL)
         && EVP_DigestUpdate(md_ctx, x->bytes->data, x->bytes->length)
         && EVP_DigestFinal_ex(md_ctx, md, NULL))
         ret = (((unsigned long)md[0]) | ((unsigned long)md[1] << 8L) |
                ((unsigned long)md[2] << 16L) | ((unsigned long)md[3] << 24L)
             ) & 0xffffffffL;
+
+ end:
     EVP_MD_CTX_free(md_ctx);
+    EVP_MD_free(md5);
 
     return ret;
 }
@@ -450,9 +454,17 @@ STACK_OF(X509) *X509_chain_up_ref(STACK_OF(X509) *chain)
     STACK_OF(X509) *ret;
     int i;
     ret = sk_X509_dup(chain);
+    if (ret == NULL)
+        return NULL;
     for (i = 0; i < sk_X509_num(ret); i++) {
         X509 *x = sk_X509_value(ret, i);
-        X509_up_ref(x);
+        if (!X509_up_ref(x))
+            goto err;
     }
     return ret;
+ err:
+    while (i-- > 0)
+        X509_free (sk_X509_value(ret, i));
+    sk_X509_free(ret);
+    return NULL;
 }

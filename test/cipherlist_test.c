@@ -1,7 +1,7 @@
 /*
- * Copyright 2016-2017 The OpenSSL Project Authors. All Rights Reserved.
+ * Copyright 2016-2018 The OpenSSL Project Authors. All Rights Reserved.
  *
- * Licensed under the OpenSSL licenses, (the "License");
+ * Licensed under the Apache License 2.0 (the "License");
  * you may not use this file except in compliance with the License.
  * You may obtain a copy of the License at
  * https://www.openssl.org/source/license.html
@@ -63,6 +63,13 @@ static CIPHERLIST_TEST_FIXTURE *set_up(const char *const test_case_name)
  * are currently broken and should be considered mission impossible in libssl.
  */
 static const uint32_t default_ciphers_in_order[] = {
+#ifndef OPENSSL_NO_TLS1_3
+    TLS1_3_CK_AES_256_GCM_SHA384,
+# if !defined(OPENSSL_NO_CHACHA) && !defined(OPENSSL_NO_POLY1305)
+    TLS1_3_CK_CHACHA20_POLY1305_SHA256,
+# endif
+    TLS1_3_CK_AES_128_GCM_SHA256,
+#endif
 #ifndef OPENSSL_NO_TLS1_2
 # ifndef OPENSSL_NO_EC
     TLS1_CK_ECDHE_ECDSA_WITH_AES_256_GCM_SHA384,
@@ -72,7 +79,7 @@ static const uint32_t default_ciphers_in_order[] = {
     TLS1_CK_DHE_RSA_WITH_AES_256_GCM_SHA384,
 # endif
 
-# if !defined OPENSSL_NO_CHACHA && !defined OPENSSL_NO_POLY1305
+# if !defined(OPENSSL_NO_CHACHA) && !defined(OPENSSL_NO_POLY1305)
 #  ifndef OPENSSL_NO_EC
     TLS1_CK_ECDHE_ECDSA_WITH_CHACHA20_POLY1305,
     TLS1_CK_ECDHE_RSA_WITH_CHACHA20_POLY1305,
@@ -105,36 +112,37 @@ static const uint32_t default_ciphers_in_order[] = {
 # endif
 #endif  /* !OPENSSL_NO_TLS1_2 */
 
-#ifndef OPENSSL_NO_EC
+#if !defined(OPENSSL_NO_TLS1_2) || defined(OPENSSL_NO_TLS1_3)
+    /* These won't be usable if TLSv1.3 is available but TLSv1.2 isn't */
+# ifndef OPENSSL_NO_EC
     TLS1_CK_ECDHE_ECDSA_WITH_AES_256_CBC_SHA,
     TLS1_CK_ECDHE_RSA_WITH_AES_256_CBC_SHA,
-#endif
-#ifndef OPENSSL_NO_DH
+# endif
+ #ifndef OPENSSL_NO_DH
     TLS1_CK_DHE_RSA_WITH_AES_256_SHA,
-#endif
-#ifndef OPENSSL_NO_EC
+# endif
+# ifndef OPENSSL_NO_EC
     TLS1_CK_ECDHE_ECDSA_WITH_AES_128_CBC_SHA,
     TLS1_CK_ECDHE_RSA_WITH_AES_128_CBC_SHA,
-#endif
-#ifndef OPENSSL_NO_DH
+# endif
+# ifndef OPENSSL_NO_DH
     TLS1_CK_DHE_RSA_WITH_AES_128_SHA,
-#endif
+# endif
+#endif /* !defined(OPENSSL_NO_TLS1_2) || defined(OPENSSL_NO_TLS1_3) */
 
 #ifndef OPENSSL_NO_TLS1_2
     TLS1_CK_RSA_WITH_AES_256_GCM_SHA384,
     TLS1_CK_RSA_WITH_AES_128_GCM_SHA256,
 #endif
-#ifndef OPENSSL_NO_TLS1_3
-    TLS1_3_CK_AES_256_GCM_SHA384,
-    TLS1_3_CK_CHACHA20_POLY1305_SHA256,
-    TLS1_3_CK_AES_128_GCM_SHA256,
-#endif
 #ifndef OPENSSL_NO_TLS1_2
     TLS1_CK_RSA_WITH_AES_256_SHA256,
     TLS1_CK_RSA_WITH_AES_128_SHA256,
 #endif
+#if !defined(OPENSSL_NO_TLS1_2) || defined(OPENSSL_NO_TLS1_3)
+    /* These won't be usable if TLSv1.3 is available but TLSv1.2 isn't */
     TLS1_CK_RSA_WITH_AES_256_SHA,
     TLS1_CK_RSA_WITH_AES_128_SHA,
+#endif
 };
 
 static int test_default_cipherlist(SSL_CTX *ctx)
@@ -207,9 +215,44 @@ static int test_default_cipherlist_explicit(void)
     return result;
 }
 
-int setup_tests()
+/* SSL_CTX_set_cipher_list() should fail if it clears all TLSv1.2 ciphers. */
+static int test_default_cipherlist_clear(void)
+{
+    SETUP_CIPHERLIST_TEST_FIXTURE();
+    SSL *s = NULL;
+
+    if (fixture == NULL)
+        return 0;
+
+    if (!TEST_int_eq(SSL_CTX_set_cipher_list(fixture->server, "no-such"), 0))
+        goto end;
+
+    if (!TEST_int_eq(ERR_GET_REASON(ERR_get_error()), SSL_R_NO_CIPHER_MATCH))
+        goto end;
+
+    s = SSL_new(fixture->client);
+
+    if (!TEST_ptr(s))
+      goto end;
+
+    if (!TEST_int_eq(SSL_set_cipher_list(s, "no-such"), 0))
+        goto end;
+
+    if (!TEST_int_eq(ERR_GET_REASON(ERR_get_error()),
+                SSL_R_NO_CIPHER_MATCH))
+        goto end;
+
+    result = 1;
+end:
+    SSL_free(s);
+    tear_down(fixture);
+    return result;
+}
+
+int setup_tests(void)
 {
     ADD_TEST(test_default_cipherlist_implicit);
     ADD_TEST(test_default_cipherlist_explicit);
+    ADD_TEST(test_default_cipherlist_clear);
     return 1;
 }

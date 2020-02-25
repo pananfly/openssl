@@ -1,7 +1,7 @@
 /*
- * Copyright 1995-2017 The OpenSSL Project Authors. All Rights Reserved.
+ * Copyright 1995-2018 The OpenSSL Project Authors. All Rights Reserved.
  *
- * Licensed under the OpenSSL license (the "License").  You may not use
+ * Licensed under the Apache License 2.0 (the "License").  You may not use
  * this file except in compliance with the License.  You can obtain a copy
  * in the file LICENSE in the source distribution or at
  * https://www.openssl.org/source/license.html
@@ -11,6 +11,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include "apps.h"
+#include "progs.h"
 #include <openssl/err.h>
 #include <openssl/evp.h>
 #include <openssl/x509.h>
@@ -26,27 +27,32 @@ typedef enum OPTION_choice {
 } OPTION_CHOICE;
 
 const OPTIONS asn1parse_options[] = {
+    OPT_SECTION("General"),
     {"help", OPT_HELP, '-', "Display this summary"},
+    {"oid", OPT_OID, '<', "file of extra oid definitions"},
+
+    OPT_SECTION("I/O"),
     {"inform", OPT_INFORM, 'F', "input format - one of DER PEM"},
     {"in", OPT_IN, '<', "input file"},
     {"out", OPT_OUT, '>', "output file (output format is always DER)"},
-    {"i", OPT_INDENT, 0, "indents the output"},
     {"noout", OPT_NOOUT, 0, "do not produce any output"},
     {"offset", OPT_OFFSET, 'p', "offset into file"},
     {"length", OPT_LENGTH, 'p', "length of section in file"},
-    {"oid", OPT_OID, '<', "file of extra oid definitions"},
-    {"dump", OPT_DUMP, 0, "unknown data in hex form"},
-    {"dlimit", OPT_DLIMIT, 'p',
-     "dump the first arg bytes of unknown data in hex form"},
-    {"strparse", OPT_STRPARSE, 's',
+    {"strparse", OPT_STRPARSE, 'p',
      "offset; a series of these can be used to 'dig'"},
-    {OPT_MORE_STR, 0, 0, "into multiple ASN1 blob wrappings"},
     {"genstr", OPT_GENSTR, 's', "string to generate ASN1 structure from"},
+    {OPT_MORE_STR, 0, 0, "into multiple ASN1 blob wrappings"},
     {"genconf", OPT_GENCONF, 's', "file to generate ASN1 structure from"},
-    {OPT_MORE_STR, 0, 0, "(-inform  will be ignored)"},
     {"strictpem", OPT_STRICTPEM, 0,
      "do not attempt base64 decode outside PEM markers"},
     {"item", OPT_ITEM, 's', "item to parse and print"},
+    {OPT_MORE_STR, 0, 0, "(-inform  will be ignored)"},
+
+    OPT_SECTION("Formatting"),
+    {"i", OPT_INDENT, 0, "indents the output"},
+    {"dump", OPT_DUMP, 0, "unknown data in hex form"},
+    {"dlimit", OPT_DLIMIT, 'p',
+     "dump the first arg bytes of unknown data in hex form"},
     {NULL}
 };
 
@@ -112,13 +118,13 @@ int asn1parse_main(int argc, char **argv)
             offset = strtol(opt_arg(), NULL, 0);
             break;
         case OPT_LENGTH:
-            length = atoi(opt_arg());
+            length = strtol(opt_arg(), NULL, 0);
             break;
         case OPT_DUMP:
             dump = -1;
             break;
         case OPT_DLIMIT:
-            dump = atoi(opt_arg());
+            dump = strtol(opt_arg(), NULL, 0);
             break;
         case OPT_STRPARSE:
             sk_OPENSSL_STRING_push(osk, opt_arg());
@@ -169,17 +175,17 @@ int asn1parse_main(int argc, char **argv)
     if (derfile && (derout = bio_open_default(derfile, 'w', FORMAT_ASN1)) == NULL)
         goto end;
 
+    if ((buf = BUF_MEM_new()) == NULL)
+        goto end;
     if (strictpem) {
-        if (PEM_read_bio(in, &name, &header, &str, &num) !=
-            1) {
+        if (PEM_read_bio(in, &name, &header, &str, &num) != 1) {
             BIO_printf(bio_err, "Error reading PEM file\n");
             ERR_print_errors(bio_err);
             goto end;
         }
+        buf->data = (char *)str;
+        buf->length = buf->max = num;
     } else {
-
-        if ((buf = BUF_MEM_new()) == NULL)
-            goto end;
         if (!BUF_MEM_grow(buf, BUFSIZ * 8))
             goto end;           /* Pre-allocate :-) */
 
@@ -204,7 +210,7 @@ int asn1parse_main(int argc, char **argv)
 
             num = 0;
             for (;;) {
-                if (!BUF_MEM_grow(buf, (int)num + BUFSIZ))
+                if (!BUF_MEM_grow(buf, num + BUFSIZ))
                     goto end;
                 i = BIO_read(in, &(buf->data[num]), BUFSIZ);
                 if (i <= 0)
@@ -224,9 +230,9 @@ int asn1parse_main(int argc, char **argv)
         for (i = 0; i < sk_OPENSSL_STRING_num(osk); i++) {
             ASN1_TYPE *atmp;
             int typ;
-            j = atoi(sk_OPENSSL_STRING_value(osk, i));
-            if (j == 0) {
-                BIO_printf(bio_err, "'%s' is an invalid number\n",
+            j = strtol(sk_OPENSSL_STRING_value(osk, i), NULL, 0);
+            if (j <= 0 || j >= tmplen) {
+                BIO_printf(bio_err, "'%s' is out of range\n",
                            sk_OPENSSL_STRING_value(osk, i));
                 continue;
             }
@@ -257,14 +263,14 @@ int asn1parse_main(int argc, char **argv)
         num = tmplen;
     }
 
-    if (offset >= num) {
-        BIO_printf(bio_err, "Error: offset too large\n");
+    if (offset < 0 || offset >= num) {
+        BIO_printf(bio_err, "Error: offset out of range\n");
         goto end;
     }
 
     num -= offset;
 
-    if ((length == 0) || ((long)length > num))
+    if (length == 0 || length > (unsigned int)num)
         length = (unsigned int)num;
     if (derout != NULL) {
         if (BIO_write(derout, str + offset, length) != (int)length) {
@@ -302,8 +308,6 @@ int asn1parse_main(int argc, char **argv)
     BUF_MEM_free(buf);
     OPENSSL_free(name);
     OPENSSL_free(header);
-    if (strictpem)
-        OPENSSL_free(str);
     ASN1_TYPE_free(at);
     sk_OPENSSL_STRING_free(osk);
     return ret;

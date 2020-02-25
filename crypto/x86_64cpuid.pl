@@ -1,15 +1,16 @@
 #! /usr/bin/env perl
-# Copyright 2005-2016 The OpenSSL Project Authors. All Rights Reserved.
+# Copyright 2005-2018 The OpenSSL Project Authors. All Rights Reserved.
 #
-# Licensed under the OpenSSL license (the "License").  You may not use
+# Licensed under the Apache License 2.0 (the "License").  You may not use
 # this file except in compliance with the License.  You can obtain a copy
 # in the file LICENSE in the source distribution or at
 # https://www.openssl.org/source/license.html
 
 
-$flavour = shift;
-$output  = shift;
-if ($flavour =~ /\./) { $output = $flavour; undef $flavour; }
+# $output is the last argument if it looks like a file (it has an extension)
+# $flavour is the first argument if it doesn't look like a file
+$output = $#ARGV >= 0 && $ARGV[$#ARGV] =~ m|\.\w+$| ? pop : undef;
+$flavour = $#ARGV >= 0 && $ARGV[0] !~ m|\.| ? shift : undef;
 
 $win64=0; $win64=1 if ($flavour =~ /[nm]asm|mingw64/ || $output =~ /\.asm$/);
 
@@ -18,7 +19,8 @@ $0 =~ m/(.*[\/\\])[^\/\\]+$/; $dir=$1;
 ( $xlate="${dir}perlasm/x86_64-xlate.pl" and -f $xlate) or
 die "can't locate x86_64-xlate.pl";
 
-open OUT,"| \"$^X\" \"$xlate\" $flavour \"$output\"";
+open OUT,"| \"$^X\" \"$xlate\" $flavour \"$output\""
+     or die "can't call $xlate: $!";
 *STDOUT=*OUT;
 
 ($arg1,$arg2,$arg3,$arg4)=$win64?("%rcx","%rdx","%r8", "%r9") :	# Win64 order
@@ -39,6 +41,7 @@ print<<___;
 .type	OPENSSL_atomic_add,\@abi-omnipotent
 .align	16
 OPENSSL_atomic_add:
+.cfi_startproc
 	movl	($arg1),%eax
 .Lspin:	leaq	($arg2,%rax),%r8
 	.byte	0xf0		# lock
@@ -47,16 +50,19 @@ OPENSSL_atomic_add:
 	movl	%r8d,%eax
 	.byte	0x48,0x98	# cltq/cdqe
 	ret
+.cfi_endproc
 .size	OPENSSL_atomic_add,.-OPENSSL_atomic_add
 
 .globl	OPENSSL_rdtsc
 .type	OPENSSL_rdtsc,\@abi-omnipotent
 .align	16
 OPENSSL_rdtsc:
+.cfi_startproc
 	rdtsc
 	shl	\$32,%rdx
 	or	%rdx,%rax
 	ret
+.cfi_endproc
 .size	OPENSSL_rdtsc,.-OPENSSL_rdtsc
 
 .globl	OPENSSL_ia32_cpuid
@@ -232,6 +238,7 @@ OPENSSL_ia32_cpuid:
 .type   OPENSSL_cleanse,\@abi-omnipotent
 .align  16
 OPENSSL_cleanse:
+.cfi_startproc
 	xor	%rax,%rax
 	cmp	\$15,$arg2
 	jae	.Lot
@@ -261,16 +268,30 @@ OPENSSL_cleanse:
 	cmp	\$0,$arg2
 	jne	.Little
 	ret
+.cfi_endproc
 .size	OPENSSL_cleanse,.-OPENSSL_cleanse
 
 .globl  CRYPTO_memcmp
 .type   CRYPTO_memcmp,\@abi-omnipotent
 .align  16
 CRYPTO_memcmp:
+.cfi_startproc
 	xor	%rax,%rax
 	xor	%r10,%r10
 	cmp	\$0,$arg3
 	je	.Lno_data
+	cmp	\$16,$arg3
+	jne	.Loop_cmp
+	mov	($arg1),%r10
+	mov	8($arg1),%r11
+	mov	\$1,$arg3
+	xor	($arg2),%r10
+	xor	8($arg2),%r11
+	or	%r11,%r10
+	cmovnz	$arg3,%rax
+	ret
+
+.align	16
 .Loop_cmp:
 	mov	($arg1),%r10b
 	lea	1($arg1),$arg1
@@ -283,6 +304,7 @@ CRYPTO_memcmp:
 	shr	\$63,%rax
 .Lno_data:
 	ret
+.cfi_endproc
 .size	CRYPTO_memcmp,.-CRYPTO_memcmp
 ___
 
@@ -291,6 +313,7 @@ print<<___ if (!$win64);
 .type	OPENSSL_wipe_cpu,\@abi-omnipotent
 .align	16
 OPENSSL_wipe_cpu:
+.cfi_startproc
 	pxor	%xmm0,%xmm0
 	pxor	%xmm1,%xmm1
 	pxor	%xmm2,%xmm2
@@ -317,6 +340,7 @@ OPENSSL_wipe_cpu:
 	xorq	%r11,%r11
 	leaq	8(%rsp),%rax
 	ret
+.cfi_endproc
 .size	OPENSSL_wipe_cpu,.-OPENSSL_wipe_cpu
 ___
 print<<___ if ($win64);
@@ -353,6 +377,7 @@ print<<___;
 .type	OPENSSL_instrument_bus,\@abi-omnipotent
 .align	16
 OPENSSL_instrument_bus:
+.cfi_startproc
 	mov	$arg1,$out	# tribute to Win64
 	mov	$arg2,$cnt
 	mov	$arg2,$max
@@ -379,12 +404,14 @@ OPENSSL_instrument_bus:
 
 	mov	$max,%rax
 	ret
+.cfi_endproc
 .size	OPENSSL_instrument_bus,.-OPENSSL_instrument_bus
 
 .globl	OPENSSL_instrument_bus2
 .type	OPENSSL_instrument_bus2,\@abi-omnipotent
 .align	16
 OPENSSL_instrument_bus2:
+.cfi_startproc
 	mov	$arg1,$out	# tribute to Win64
 	mov	$arg2,$cnt
 	mov	$arg3,$max
@@ -427,6 +454,7 @@ OPENSSL_instrument_bus2:
 	mov	$redzone(%rsp),%rax
 	sub	$cnt,%rax
 	ret
+.cfi_endproc
 .size	OPENSSL_instrument_bus2,.-OPENSSL_instrument_bus2
 ___
 }
@@ -434,25 +462,11 @@ ___
 sub gen_random {
 my $rdop = shift;
 print<<___;
-.globl	OPENSSL_ia32_${rdop}
-.type	OPENSSL_ia32_${rdop},\@abi-omnipotent
-.align	16
-OPENSSL_ia32_${rdop}:
-	mov	\$8,%ecx
-.Loop_${rdop}:
-	${rdop}	%rax
-	jc	.Lbreak_${rdop}
-	loop	.Loop_${rdop}
-.Lbreak_${rdop}:
-	cmp	\$0,%rax
-	cmove	%rcx,%rax
-	ret
-.size	OPENSSL_ia32_${rdop},.-OPENSSL_ia32_${rdop}
-
 .globl	OPENSSL_ia32_${rdop}_bytes
 .type	OPENSSL_ia32_${rdop}_bytes,\@abi-omnipotent
 .align	16
 OPENSSL_ia32_${rdop}_bytes:
+.cfi_startproc
 	xor	%rax, %rax	# return value
 	cmp	\$0,$arg2
 	je	.Ldone_${rdop}_bytes
@@ -482,12 +496,14 @@ OPENSSL_ia32_${rdop}_bytes:
 	mov	%r10b,($arg1)
 	lea	1($arg1),$arg1
 	inc	%rax
-	shr	\$8,%r8
+	shr	\$8,%r10
 	dec	$arg2
 	jnz	.Ltail_${rdop}_bytes
 
 .Ldone_${rdop}_bytes:
+	xor	%r10,%r10	# Clear sensitive data from register
 	ret
+.cfi_endproc
 .size	OPENSSL_ia32_${rdop}_bytes,.-OPENSSL_ia32_${rdop}_bytes
 ___
 }

@@ -1,23 +1,24 @@
 /*
- * Copyright 2015-2016 The OpenSSL Project Authors. All Rights Reserved.
+ * Copyright 2015-2018 The OpenSSL Project Authors. All Rights Reserved.
  *
- * Licensed under the OpenSSL license (the "License").  You may not use
+ * Licensed under the Apache License 2.0 (the "License").  You may not use
  * this file except in compliance with the License.  You can obtain a copy
  * in the file LICENSE in the source distribution or at
  * https://www.openssl.org/source/license.html
  */
 
-#ifndef OPENSSL_ASYNC_ARCH_ASYNC_POSIX_H
-#define OPENSSL_ASYNC_ARCH_ASYNC_POSIX_H
+#ifndef OSSL_CRYPTO_ASYNC_POSIX_H
+#define OSSL_CRYPTO_ASYNC_POSIX_H
 #include <openssl/e_os2.h>
 
-#if (defined(OPENSSL_SYS_UNIX) || defined(OPENSSL_SYS_CYGWIN)) \
+#if defined(OPENSSL_SYS_UNIX) \
     && defined(OPENSSL_THREADS) && !defined(OPENSSL_NO_ASYNC) \
     && !defined(__ANDROID__) && !defined(__OpenBSD__)
 
 # include <unistd.h>
 
-# if _POSIX_VERSION >= 200112L
+# if _POSIX_VERSION >= 200112L \
+     && (_POSIX_VERSION < 200809L || defined(__GLIBC__))
 
 # include <pthread.h>
 
@@ -54,4 +55,4 @@ void async_fibre_free(async_fibre *fibre);
 
 # endif
 #endif
-#endif /* OPENSSL_ASYNC_ARCH_ASYNC_POSIX_H */
+#endif /* OSSL_CRYPTO_ASYNC_POSIX_H */

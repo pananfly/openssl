@@ -1,7 +1,7 @@
 /*
- * Copyright 2006-2017 The OpenSSL Project Authors. All Rights Reserved.
+ * Copyright 2006-2018 The OpenSSL Project Authors. All Rights Reserved.
  *
- * Licensed under the OpenSSL license (the "License").  You may not use
+ * Licensed under the Apache License 2.0 (the "License").  You may not use
  * this file except in compliance with the License.  You can obtain a copy
  * in the file LICENSE in the source distribution or at
  * https://www.openssl.org/source/license.html
@@ -10,6 +10,7 @@
 #include <stdio.h>
 #include <string.h>
 #include "apps.h"
+#include "progs.h"
 #include <openssl/pem.h>
 #include <openssl/err.h>
 #include <openssl/evp.h>
@@ -22,27 +23,33 @@ typedef enum OPTION_choice {
 } OPTION_CHOICE;
 
 const OPTIONS pkey_options[] = {
+    OPT_SECTION("General"),
     {"help", OPT_HELP, '-', "Display this summary"},
-    {"inform", OPT_INFORM, 'f', "Input format (DER or PEM)"},
-    {"outform", OPT_OUTFORM, 'F', "Output format (DER or PEM)"},
-    {"passin", OPT_PASSIN, 's', "Input file pass phrase source"},
-    {"passout", OPT_PASSOUT, 's', "Output file pass phrase source"},
-    {"in", OPT_IN, 's', "Input key"},
-    {"out", OPT_OUT, '>', "Output file"},
-    {"pubin", OPT_PUBIN, '-',
-     "Read public key from input (default is private key)"},
-    {"pubout", OPT_PUBOUT, '-', "Output public key, not private"},
-    {"text_pub", OPT_TEXT_PUB, '-', "Only output public key components"},
-    {"text", OPT_TEXT, '-', "Output in plaintext as well"},
-    {"noout", OPT_NOOUT, '-', "Don't output the key"},
-    {"", OPT_MD, '-', "Any supported cipher"},
-    {"traditional", OPT_TRADITIONAL, '-',
-     "Use traditional format for private keys"},
 #ifndef OPENSSL_NO_ENGINE
     {"engine", OPT_ENGINE, 's', "Use engine, possibly a hardware device"},
 #endif
     {"check", OPT_CHECK, '-', "Check key consistency"},
     {"pubcheck", OPT_PUB_CHECK, '-', "Check public key consistency"},
+    {"", OPT_MD, '-', "Any supported cipher"},
+
+    OPT_SECTION("Input"),
+    {"in", OPT_IN, 's', "Input key"},
+    {"inform", OPT_INFORM, 'f', "Input format (DER or PEM)"},
+    {"passin", OPT_PASSIN, 's', "Input file pass phrase source"},
+    {"pubin", OPT_PUBIN, '-',
+     "Read public key from input (default is private key)"},
+    {"traditional", OPT_TRADITIONAL, '-',
+     "Use traditional format for private keys"},
+
+    OPT_SECTION("Output"),
+    {"outform", OPT_OUTFORM, 'F', "Output format (DER or PEM)"},
+    {"passout", OPT_PASSOUT, 's', "Output file pass phrase source"},
+    {"out", OPT_OUT, '>', "Output file"},
+    {"pubout", OPT_PUBOUT, '-', "Output public key, not private"},
+    {"text_pub", OPT_TEXT_PUB, '-', "Only output public key components"},
+    {"text", OPT_TEXT, '-', "Output in plaintext as well"},
+    {"noout", OPT_NOOUT, '-', "Don't output the key"},
+
     {NULL}
 };
 
@@ -185,23 +192,29 @@ int pkey_main(int argc, char **argv)
     if (!noout) {
         if (outformat == FORMAT_PEM) {
             if (pubout) {
-                PEM_write_bio_PUBKEY(out, pkey);
+                if (!PEM_write_bio_PUBKEY(out, pkey))
+                    goto end;
             } else {
                 assert(private);
-                if (traditional)
-                    PEM_write_bio_PrivateKey_traditional(out, pkey, cipher,
-                                                         NULL, 0, NULL,
-                                                         passout);
-                else
-                    PEM_write_bio_PrivateKey(out, pkey, cipher,
-                                             NULL, 0, NULL, passout);
+                if (traditional) {
+                    if (!PEM_write_bio_PrivateKey_traditional(out, pkey, cipher,
+                                                              NULL, 0, NULL,
+                                                              passout))
+                        goto end;
+                } else {
+                    if (!PEM_write_bio_PrivateKey(out, pkey, cipher,
+                                                  NULL, 0, NULL, passout))
+                        goto end;
+                }
             }
         } else if (outformat == FORMAT_ASN1) {
             if (pubout) {
-                i2d_PUBKEY_bio(out, pkey);
+                if (!i2d_PUBKEY_bio(out, pkey))
+                    goto end;
             } else {
                 assert(private);
-                i2d_PrivateKey_bio(out, pkey);
+                if (!i2d_PrivateKey_bio(out, pkey))
+                    goto end;
             }
         } else {
             BIO_printf(bio_err, "Bad format specified for key\n");
@@ -211,10 +224,12 @@ int pkey_main(int argc, char **argv)
 
     if (text) {
         if (pubtext) {
-            EVP_PKEY_print_public(out, pkey, 0, NULL);
+            if (EVP_PKEY_print_public(out, pkey, 0, NULL) <= 0)
+                goto end;
         } else {
             assert(private);
-            EVP_PKEY_print_private(out, pkey, 0, NULL);
+            if (EVP_PKEY_print_private(out, pkey, 0, NULL) <= 0)
+                goto end;
         }
     }
 

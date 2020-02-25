@@ -1,7 +1,7 @@
 /*
- * Copyright 1995-2017 The OpenSSL Project Authors. All Rights Reserved.
+ * Copyright 1995-2019 The OpenSSL Project Authors. All Rights Reserved.
  *
- * Licensed under the OpenSSL license (the "License").  You may not use
+ * Licensed under the Apache License 2.0 (the "License").  You may not use
  * this file except in compliance with the License.  You can obtain a copy
  * in the file LICENSE in the source distribution or at
  * https://www.openssl.org/source/license.html
@@ -17,6 +17,7 @@
 #include <openssl/bn.h>
 #include <openssl/rand.h>
 #include <openssl/err.h>
+#include <openssl/obj_mac.h>
 #include "testutil.h"
 
 #ifndef OPENSSL_NO_DH
@@ -26,6 +27,11 @@ static int cb(int p, int n, BN_GENCB *arg);
 
 static int dh_test(void)
 {
+    DH *dh = NULL;
+    BIGNUM *p = NULL, *q = NULL, *g = NULL;
+    const BIGNUM *p2, *q2, *g2;
+    BIGNUM *priv_key = NULL;
+    const BIGNUM *pub_key2, *priv_key2;
     BN_GENCB *_cb = NULL;
     DH *a = NULL;
     DH *b = NULL;
@@ -39,71 +45,168 @@ static int dh_test(void)
     int i, alen, blen, clen, aout, bout, cout;
     int ret = 0;
 
-    if (!TEST_ptr(_cb = BN_GENCB_new()))
-        goto err;
-    BN_GENCB_set(_cb, &cb, NULL);
-    if (!TEST_ptr(a = DH_new())
-            || !TEST_true(DH_generate_parameters_ex(a, 64,
-                                                    DH_GENERATOR_5, _cb)))
-        goto err;
+    if (!TEST_ptr(dh = DH_new())
+        || !TEST_ptr(p = BN_new())
+        || !TEST_ptr(q = BN_new())
+        || !TEST_ptr(g = BN_new())
+        || !TEST_ptr(priv_key = BN_new()))
+        goto err1;
 
-    if (!DH_check(a, &i))
-        goto err;
+    /*
+     * I) basic tests
+     */
+
+    /* using a small predefined Sophie Germain DH group with generator 3 */
+    if (!TEST_true(BN_set_word(p, 4079L))
+        || !TEST_true(BN_set_word(q, 2039L))
+        || !TEST_true(BN_set_word(g, 3L))
+        || !TEST_true(DH_set0_pqg(dh, p, q, g)))
+        goto err1;
+
+    /* check fails, because p is way too small */
+    if (!DH_check(dh, &i))
+        goto err2;
+    i ^= DH_MODULUS_TOO_SMALL;
     if (!TEST_false(i & DH_CHECK_P_NOT_PRIME)
             || !TEST_false(i & DH_CHECK_P_NOT_SAFE_PRIME)
             || !TEST_false(i & DH_UNABLE_TO_CHECK_GENERATOR)
-            || !TEST_false(i & DH_NOT_SUITABLE_GENERATOR))
-        goto err;
+            || !TEST_false(i & DH_NOT_SUITABLE_GENERATOR)
+            || !TEST_false(i & DH_CHECK_Q_NOT_PRIME)
+            || !TEST_false(i & DH_CHECK_INVALID_Q_VALUE)
+            || !TEST_false(i & DH_CHECK_INVALID_J_VALUE)
+            || !TEST_false(i & DH_MODULUS_TOO_SMALL)
+            || !TEST_false(i & DH_MODULUS_TOO_LARGE)
+            || !TEST_false(i))
+        goto err2;
+
+    /* test the combined getter for p, q, and g */
+    DH_get0_pqg(dh, &p2, &q2, &g2);
+    if (!TEST_ptr_eq(p2, p)
+        || !TEST_ptr_eq(q2, q)
+        || !TEST_ptr_eq(g2, g))
+        goto err2;
+
+    /* test the simple getters for p, q, and g */
+    if (!TEST_ptr_eq(DH_get0_p(dh), p2)
+        || !TEST_ptr_eq(DH_get0_q(dh), q2)
+        || !TEST_ptr_eq(DH_get0_g(dh), g2))
+        goto err2;
+
+    /* set the private key only*/
+    if (!TEST_true(BN_set_word(priv_key, 1234L))
+        || !TEST_true(DH_set0_key(dh, NULL, priv_key)))
+        goto err2;
+
+    /* test the combined getter for pub_key and priv_key */
+    DH_get0_key(dh, &pub_key2, &priv_key2);
+    if (!TEST_ptr_eq(pub_key2, NULL)
+        || !TEST_ptr_eq(priv_key2, priv_key))
+        goto err3;
+
+    /* test the simple getters for pub_key and priv_key */
+    if (!TEST_ptr_eq(DH_get0_pub_key(dh), pub_key2)
+        || !TEST_ptr_eq(DH_get0_priv_key(dh), priv_key2))
+        goto err3;
+
+    /* now generate a key pair (expect failure since modulus is too small) */
+    if (!TEST_false(DH_generate_key(dh)))
+        goto err3;
+
+    /* We'll have a stale error on the queue from the above test so clear it */
+    ERR_clear_error();
+
+    /*
+     * II) key generation
+     */
+
+    /* generate a DH group ... */
+    if (!TEST_ptr(_cb = BN_GENCB_new()))
+        goto err3;
+    BN_GENCB_set(_cb, &cb, NULL);
+    if (!TEST_ptr(a = DH_new())
+            || !TEST_true(DH_generate_parameters_ex(a, 512,
+                                                    DH_GENERATOR_5, _cb)))
+        goto err3;
+
+    /* ... and check whether it is valid */
+    if (!DH_check(a, &i))
+        goto err3;
+    if (!TEST_false(i & DH_CHECK_P_NOT_PRIME)
+            || !TEST_false(i & DH_CHECK_P_NOT_SAFE_PRIME)
+            || !TEST_false(i & DH_UNABLE_TO_CHECK_GENERATOR)
+            || !TEST_false(i & DH_NOT_SUITABLE_GENERATOR)
+            || !TEST_false(i & DH_CHECK_Q_NOT_PRIME)
+            || !TEST_false(i & DH_CHECK_INVALID_Q_VALUE)
+            || !TEST_false(i & DH_CHECK_INVALID_J_VALUE)
+            || !TEST_false(i & DH_MODULUS_TOO_SMALL)
+            || !TEST_false(i & DH_MODULUS_TOO_LARGE)
+            || !TEST_false(i))
+        goto err3;
 
     DH_get0_pqg(a, &ap, NULL, &ag);
 
+    /* now create another copy of the DH group for the peer */
     if (!TEST_ptr(b = DH_new()))
-        goto err;
+        goto err3;
 
     if (!TEST_ptr(bp = BN_dup(ap))
             || !TEST_ptr(bg = BN_dup(ag))
             || !TEST_true(DH_set0_pqg(b, bp, NULL, bg)))
-        goto err;
+        goto err3;
     bp = bg = NULL;
 
+    /*
+     * III) simulate a key exchange
+     */
+
     if (!DH_generate_key(a))
-        goto err;
+        goto err3;
     DH_get0_key(a, &apub_key, NULL);
 
     if (!DH_generate_key(b))
-        goto err;
+        goto err3;
     DH_get0_key(b, &bpub_key, &bpriv_key);
 
     /* Also test with a private-key-only copy of |b|. */
     if (!TEST_ptr(c = DHparams_dup(b))
             || !TEST_ptr(cpriv_key = BN_dup(bpriv_key))
             || !TEST_true(DH_set0_key(c, NULL, cpriv_key)))
-        goto err;
+        goto err3;
     cpriv_key = NULL;
 
     alen = DH_size(a);
     if (!TEST_ptr(abuf = OPENSSL_malloc(alen))
             || !TEST_true((aout = DH_compute_key(abuf, bpub_key, a)) != -1))
-        goto err;
+        goto err3;
 
     blen = DH_size(b);
     if (!TEST_ptr(bbuf = OPENSSL_malloc(blen))
             || !TEST_true((bout = DH_compute_key(bbuf, apub_key, b)) != -1))
-        goto err;
+        goto err3;
 
     clen = DH_size(c);
     if (!TEST_ptr(cbuf = OPENSSL_malloc(clen))
             || !TEST_true((cout = DH_compute_key(cbuf, apub_key, c)) != -1))
-        goto err;
+        goto err3;
 
-    if (!TEST_true(aout >= 4)
+    if (!TEST_true(aout >= 20)
             || !TEST_mem_eq(abuf, aout, bbuf, bout)
             || !TEST_mem_eq(abuf, aout, cbuf, cout))
-        goto err;
+        goto err3;
 
     ret = 1;
+    goto success;
 
- err:
+ err1:
+    /* an error occurred before p,q,g were assigned to dh */
+    BN_free(p);
+    BN_free(q);
+    BN_free(g);
+ err2:
+    /* an error occurred before priv_key was assigned to dh */
+    BN_free(priv_key);
+ err3:
+ success:
     OPENSSL_free(abuf);
     OPENSSL_free(bbuf);
     OPENSSL_free(cbuf);
@@ -114,6 +217,8 @@ static int dh_test(void)
     BN_free(bg);
     BN_free(cpriv_key);
     BN_GENCB_free(_cb);
+    DH_free(dh);
+
     return ret;
 }
 
@@ -514,6 +619,63 @@ static int rfc5114_test(void)
     TEST_error("Test failed RFC5114 set %d\n", i + 1);
     return 0;
 }
+
+static int rfc7919_test(void)
+{
+    DH *a = NULL, *b = NULL;
+    const BIGNUM *apub_key = NULL, *bpub_key = NULL;
+    unsigned char *abuf = NULL;
+    unsigned char *bbuf = NULL;
+    int i, alen, blen, aout, bout;
+    int ret = 0;
+
+    if (!TEST_ptr(a = DH_new_by_nid(NID_ffdhe2048)))
+         goto err;
+
+    if (!DH_check(a, &i))
+        goto err;
+    if (!TEST_false(i & DH_CHECK_P_NOT_PRIME)
+            || !TEST_false(i & DH_CHECK_P_NOT_SAFE_PRIME)
+            || !TEST_false(i & DH_UNABLE_TO_CHECK_GENERATOR)
+            || !TEST_false(i & DH_NOT_SUITABLE_GENERATOR)
+            || !TEST_false(i))
+        goto err;
+
+    if (!DH_generate_key(a))
+        goto err;
+    DH_get0_key(a, &apub_key, NULL);
+
+    /* now create another copy of the DH group for the peer */
+    if (!TEST_ptr(b = DH_new_by_nid(NID_ffdhe2048)))
+        goto err;
+
+    if (!DH_generate_key(b))
+        goto err;
+    DH_get0_key(b, &bpub_key, NULL);
+
+    alen = DH_size(a);
+    if (!TEST_ptr(abuf = OPENSSL_malloc(alen))
+            || !TEST_true((aout = DH_compute_key(abuf, bpub_key, a)) != -1))
+        goto err;
+
+    blen = DH_size(b);
+    if (!TEST_ptr(bbuf = OPENSSL_malloc(blen))
+            || !TEST_true((bout = DH_compute_key(bbuf, apub_key, b)) != -1))
+        goto err;
+
+    if (!TEST_true(aout >= 20)
+            || !TEST_mem_eq(abuf, aout, bbuf, bout))
+        goto err;
+
+    ret = 1;
+
+ err:
+    OPENSSL_free(abuf);
+    OPENSSL_free(bbuf);
+    DH_free(a);
+    DH_free(b);
+    return ret;
+}
 #endif
 
 
@@ -524,6 +686,7 @@ int setup_tests(void)
 #else
     ADD_TEST(dh_test);
     ADD_TEST(rfc5114_test);
+    ADD_TEST(rfc7919_test);
 #endif
     return 1;
 }

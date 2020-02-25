@@ -1,7 +1,7 @@
 /*
- * Copyright 1995-2016 The OpenSSL Project Authors. All Rights Reserved.
+ * Copyright 1995-2018 The OpenSSL Project Authors. All Rights Reserved.
  *
- * Licensed under the OpenSSL license (the "License").  You may not use
+ * Licensed under the Apache License 2.0 (the "License").  You may not use
  * this file except in compliance with the License.  You can obtain a copy
  * in the file LICENSE in the source distribution or at
  * https://www.openssl.org/source/license.html
@@ -19,7 +19,7 @@ static int enc_read(BIO *h, char *buf, int size);
 static long enc_ctrl(BIO *h, int cmd, long arg1, void *arg2);
 static int enc_new(BIO *h);
 static int enc_free(BIO *data);
-static long enc_callback_ctrl(BIO *h, int cmd, bio_info_cb *fps);
+static long enc_callback_ctrl(BIO *h, int cmd, BIO_info_cb *fps);
 #define ENC_BLOCK_SIZE  (1024*4)
 #define ENC_MIN_CHUNK   (256)
 #define BUF_OFFSET      (ENC_MIN_CHUNK + EVP_MAX_BLOCK_LENGTH)
@@ -65,9 +65,10 @@ static int enc_new(BIO *bi)
 {
     BIO_ENC_CTX *ctx;
 
-    ctx = OPENSSL_zalloc(sizeof(*ctx));
-    if (ctx == NULL)
+    if ((ctx = OPENSSL_zalloc(sizeof(*ctx))) == NULL) {
+        EVPerr(EVP_F_ENC_NEW, ERR_R_MALLOC_FAILURE);
         return 0;
+    }
 
     ctx->cipher = EVP_CIPHER_CTX_new();
     if (ctx->cipher == NULL) {
@@ -385,7 +386,7 @@ static long enc_ctrl(BIO *b, int cmd, long num, void *ptr)
     return ret;
 }
 
-static long enc_callback_ctrl(BIO *b, int cmd, bio_info_cb *fp)
+static long enc_callback_ctrl(BIO *b, int cmd, BIO_info_cb *fp)
 {
     long ret = 1;
     BIO *next = BIO_next(b);

@@ -1,7 +1,7 @@
 /*
- * Copyright 2009-2016 The OpenSSL Project Authors. All Rights Reserved.
+ * Copyright 2009-2018 The OpenSSL Project Authors. All Rights Reserved.
  *
- * Licensed under the OpenSSL license (the "License").  You may not use
+ * Licensed under the Apache License 2.0 (the "License").  You may not use
  * this file except in compliance with the License.  You can obtain a copy
  * in the file LICENSE in the source distribution or at
  * https://www.openssl.org/source/license.html
@@ -15,8 +15,8 @@
 #include <openssl/cms.h>
 #include <openssl/rand.h>
 #include <openssl/aes.h>
-#include "cms_lcl.h"
-#include "internal/asn1_int.h"
+#include "cms_local.h"
+#include "crypto/asn1.h"
 
 int CMS_RecipientInfo_set0_password(CMS_RecipientInfo *ri,
                                     unsigned char *pass, ossl_ssize_t passlen)
@@ -146,7 +146,7 @@ CMS_RecipientInfo *CMS_add0_recipient_password(CMS_ContentInfo *cms,
 
     pwri->keyDerivationAlgorithm = PKCS5_pbkdf2_set(iter, NULL, 0, -1, -1);
 
-    if (!pwri->keyDerivationAlgorithm)
+    if (pwri->keyDerivationAlgorithm == NULL)
         goto err;
 
     CMS_RecipientInfo_set0_password(ri, pass, passlen);
@@ -188,9 +188,10 @@ static int kek_unwrap_key(unsigned char *out, size_t *outlen,
         /* Invalid size */
         return 0;
     }
-    tmp = OPENSSL_malloc(inlen);
-    if (tmp == NULL)
+    if ((tmp = OPENSSL_malloc(inlen)) == NULL) {
+        CMSerr(CMS_F_KEK_UNWRAP_KEY, ERR_R_MALLOC_FAILURE);
         return 0;
+    }
     /* setup IV by decrypting last two blocks */
     if (!EVP_DecryptUpdate(ctx, tmp + inlen - 2 * blocklen, &outl,
                            in + inlen - 2 * blocklen, blocklen * 2)
@@ -272,7 +273,7 @@ static int kek_wrap_key(unsigned char *out, size_t *outlen,
 
 /* Encrypt/Decrypt content key in PWRI recipient info */
 
-int cms_RecipientInfo_pwri_crypt(CMS_ContentInfo *cms, CMS_RecipientInfo *ri,
+int cms_RecipientInfo_pwri_crypt(const CMS_ContentInfo *cms, CMS_RecipientInfo *ri,
                                  int en_de)
 {
     CMS_EncryptedContentInfo *ec;
@@ -288,7 +289,7 @@ int cms_RecipientInfo_pwri_crypt(CMS_ContentInfo *cms, CMS_RecipientInfo *ri,
 
     pwri = ri->d.pwri;
 
-    if (!pwri->pass) {
+    if (pwri->pass == NULL) {
         CMSerr(CMS_F_CMS_RECIPIENTINFO_PWRI_CRYPT, CMS_R_NO_PASSWORD);
         return 0;
     }
@@ -325,7 +326,7 @@ int cms_RecipientInfo_pwri_crypt(CMS_ContentInfo *cms, CMS_RecipientInfo *ri,
     if (!EVP_CipherInit_ex(kekctx, kekcipher, NULL, NULL, NULL, en_de))
         goto err;
     EVP_CIPHER_CTX_set_padding(kekctx, 0);
-    if (EVP_CIPHER_asn1_to_param(kekctx, kekalg->parameter) < 0) {
+    if (EVP_CIPHER_asn1_to_param(kekctx, kekalg->parameter) <= 0) {
         CMSerr(CMS_F_CMS_RECIPIENTINFO_PWRI_CRYPT,
                CMS_R_CIPHER_PARAMETER_INITIALISATION_ERROR);
         goto err;
@@ -372,6 +373,7 @@ int cms_RecipientInfo_pwri_crypt(CMS_ContentInfo *cms, CMS_RecipientInfo *ri,
             goto err;
         }
 
+        OPENSSL_clear_free(ec->key, ec->keylen);
         ec->key = key;
         ec->keylen = keylen;
 

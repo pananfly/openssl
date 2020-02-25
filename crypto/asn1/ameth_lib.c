@@ -1,7 +1,7 @@
 /*
- * Copyright 2006-2017 The OpenSSL Project Authors. All Rights Reserved.
+ * Copyright 2006-2018 The OpenSSL Project Authors. All Rights Reserved.
  *
- * Licensed under the OpenSSL license (the "License").  You may not use
+ * Licensed under the Apache License 2.0 (the "License").  You may not use
  * this file except in compliance with the License.  You can obtain a copy
  * in the file LICENSE in the source distribution or at
  * https://www.openssl.org/source/license.html
@@ -13,8 +13,8 @@
 #include <openssl/asn1t.h>
 #include <openssl/x509.h>
 #include <openssl/engine.h>
-#include "internal/asn1_int.h"
-#include "internal/evp_int.h"
+#include "crypto/asn1.h"
+#include "crypto/evp.h"
 
 #include "standard_methods.h"
 
@@ -56,6 +56,7 @@ static const EVP_PKEY_ASN1_METHOD *pkey_asn1_find(int type)
 {
     EVP_PKEY_ASN1_METHOD tmp;
     const EVP_PKEY_ASN1_METHOD *t = &tmp, **ret;
+
     tmp.pkey_id = type;
     if (app_methods) {
         int idx;
@@ -64,7 +65,7 @@ static const EVP_PKEY_ASN1_METHOD *pkey_asn1_find(int type)
             return sk_EVP_PKEY_ASN1_METHOD_value(app_methods, idx);
     }
     ret = OBJ_bsearch_ameth(&t, standard_methods, OSSL_NELEM(standard_methods));
-    if (!ret || !*ret)
+    if (ret == NULL || *ret == NULL)
         return NULL;
     return *ret;
 }
@@ -104,7 +105,8 @@ const EVP_PKEY_ASN1_METHOD *EVP_PKEY_asn1_find_str(ENGINE **pe,
                                                    const char *str, int len)
 {
     int i;
-    const EVP_PKEY_ASN1_METHOD *ameth;
+    const EVP_PKEY_ASN1_METHOD *ameth = NULL;
+
     if (len == -1)
         len = strlen(str);
     if (pe) {
@@ -124,12 +126,12 @@ const EVP_PKEY_ASN1_METHOD *EVP_PKEY_asn1_find_str(ENGINE **pe,
 #endif
         *pe = NULL;
     }
-    for (i = 0; i < EVP_PKEY_asn1_get_count(); i++) {
+    for (i = EVP_PKEY_asn1_get_count(); i-- > 0; ) {
         ameth = EVP_PKEY_asn1_get0(i);
         if (ameth->pkey_flags & ASN1_PKEY_ALIAS)
             continue;
-        if (((int)strlen(ameth->pem_str) == len)
-            && (strncasecmp(ameth->pem_str, str, len) == 0))
+        if ((int)strlen(ameth->pem_str) == len
+            && strncasecmp(ameth->pem_str, str, len) == 0)
             return ameth;
     }
     return NULL;
@@ -137,16 +139,37 @@ const EVP_PKEY_ASN1_METHOD *EVP_PKEY_asn1_find_str(ENGINE **pe,
 
 int EVP_PKEY_asn1_add0(const EVP_PKEY_ASN1_METHOD *ameth)
 {
-    if (pkey_asn1_find(ameth->pkey_id) != NULL) {
-        EVPerr(EVP_F_EVP_PKEY_ASN1_ADD0,
-               EVP_R_PKEY_ASN1_METHOD_ALREADY_REGISTERED);
+    EVP_PKEY_ASN1_METHOD tmp = { 0, };
+
+    /*
+     * One of the following must be true:
+     *
+     * pem_str == NULL AND ASN1_PKEY_ALIAS is set
+     * pem_str != NULL AND ASN1_PKEY_ALIAS is clear
+     *
+     * Anything else is an error and may lead to a corrupt ASN1 method table
+     */
+    if (!((ameth->pem_str == NULL
+           && (ameth->pkey_flags & ASN1_PKEY_ALIAS) != 0)
+          || (ameth->pem_str != NULL
+              && (ameth->pkey_flags & ASN1_PKEY_ALIAS) == 0))) {
+        EVPerr(EVP_F_EVP_PKEY_ASN1_ADD0, ERR_R_PASSED_INVALID_ARGUMENT);
         return 0;
     }
+
     if (app_methods == NULL) {
         app_methods = sk_EVP_PKEY_ASN1_METHOD_new(ameth_cmp);
         if (app_methods == NULL)
             return 0;
     }
+
+    tmp.pkey_id = ameth->pkey_id;
+    if (sk_EVP_PKEY_ASN1_METHOD_find(app_methods, &tmp) >= 0) {
+        EVPerr(EVP_F_EVP_PKEY_ASN1_ADD0,
+               EVP_R_PKEY_APPLICATION_ASN1_METHOD_ALREADY_REGISTERED);
+        return 0;
+    }
+
     if (!sk_EVP_PKEY_ASN1_METHOD_push(app_methods, ameth))
         return 0;
     sk_EVP_PKEY_ASN1_METHOD_sort(app_methods);
@@ -393,4 +416,37 @@ void EVP_PKEY_asn1_set_param_check(EVP_PKEY_ASN1_METHOD *ameth,
                                    int (*pkey_param_check) (const EVP_PKEY *pk))
 {
     ameth->pkey_param_check = pkey_param_check;
+}
+
+void EVP_PKEY_asn1_set_set_priv_key(EVP_PKEY_ASN1_METHOD *ameth,
+                                    int (*set_priv_key) (EVP_PKEY *pk,
+                                                         const unsigned char
+                                                            *priv,
+                                                         size_t len))
+{
+    ameth->set_priv_key = set_priv_key;
+}
+
+void EVP_PKEY_asn1_set_set_pub_key(EVP_PKEY_ASN1_METHOD *ameth,
+                                   int (*set_pub_key) (EVP_PKEY *pk,
+                                                       const unsigned char *pub,
+                                                       size_t len))
+{
+    ameth->set_pub_key = set_pub_key;
+}
+
+void EVP_PKEY_asn1_set_get_priv_key(EVP_PKEY_ASN1_METHOD *ameth,
+                                    int (*get_priv_key) (const EVP_PKEY *pk,
+                                                         unsigned char *priv,
+                                                         size_t *len))
+{
+    ameth->get_priv_key = get_priv_key;
+}
+
+void EVP_PKEY_asn1_set_get_pub_key(EVP_PKEY_ASN1_METHOD *ameth,
+                                   int (*get_pub_key) (const EVP_PKEY *pk,
+                                                       unsigned char *pub,
+                                                       size_t *len))
+{
+    ameth->get_pub_key = get_pub_key;
 }

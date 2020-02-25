@@ -1,7 +1,7 @@
 /*
- * Copyright 1995-2017 The OpenSSL Project Authors. All Rights Reserved.
+ * Copyright 1995-2018 The OpenSSL Project Authors. All Rights Reserved.
  *
- * Licensed under the OpenSSL license (the "License").  You may not use
+ * Licensed under the Apache License 2.0 (the "License").  You may not use
  * this file except in compliance with the License.  You can obtain a copy
  * in the file LICENSE in the source distribution or at
  * https://www.openssl.org/source/license.html
@@ -15,7 +15,7 @@
 #include <openssl/evp.h>
 #include <openssl/x509.h>
 #include <openssl/x509v3.h>
-#include "x509_lcl.h"
+#include "x509_local.h"
 
 int X509v3_get_ext_count(const STACK_OF(X509_EXTENSION) *x)
 {
@@ -128,7 +128,8 @@ STACK_OF(X509_EXTENSION) *X509v3_add_ext(STACK_OF(X509_EXTENSION) **x,
     X509err(X509_F_X509V3_ADD_EXT, ERR_R_MALLOC_FAILURE);
  err2:
     X509_EXTENSION_free(new_ex);
-    sk_X509_EXTENSION_free(sk);
+    if (x != NULL && *x == NULL)
+        sk_X509_EXTENSION_free(sk);
     return NULL;
 }
 

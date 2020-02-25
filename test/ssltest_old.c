@@ -1,9 +1,9 @@
 /*
- * Copyright 1995-2017 The OpenSSL Project Authors. All Rights Reserved.
+ * Copyright 1995-2018 The OpenSSL Project Authors. All Rights Reserved.
  * Copyright (c) 2002, Oracle and/or its affiliates. All rights reserved
  * Copyright 2005 Nokia. All rights reserved.
  *
- * Licensed under the OpenSSL license (the "License").  You may not use
+ * Licensed under the Apache License 2.0 (the "License").  You may not use
  * this file except in compliance with the License.  You can obtain a copy
  * in the file LICENSE in the source distribution or at
  * https://www.openssl.org/source/license.html
@@ -71,7 +71,7 @@
 #ifdef OPENSSL_SYS_WINDOWS
 # include <winsock.h>
 #else
-# include OPENSSL_UNISTD
+# include <unistd.h>
 #endif
 
 static SSL_CTX *s_ctx = NULL;
@@ -423,7 +423,7 @@ static int serverinfo_cli_parse_cb(SSL *s, unsigned int ext_type,
     return 1;
 }
 
-static int verify_serverinfo()
+static int verify_serverinfo(void)
 {
     if (serverinfo_sct != serverinfo_sct_seen)
         return -1;
@@ -612,6 +612,7 @@ static int custom_ext_3_srv_add_cb(SSL *s, unsigned int ext_type,
 }
 
 static char *cipher = NULL;
+static char *ciphersuites = NULL;
 static int verbose = 0;
 static int debug = 0;
 
@@ -671,7 +672,8 @@ static void sv_usage(void)
     fprintf(stderr, " -c_cert arg   - Client certificate file\n");
     fprintf(stderr,
             " -c_key arg    - Client key file (default: same as -c_cert)\n");
-    fprintf(stderr, " -cipher arg   - The cipher list\n");
+    fprintf(stderr, " -cipher arg   - The TLSv1.2 and below cipher list\n");
+    fprintf(stderr, " -ciphersuites arg   - The TLSv1.3 ciphersuites\n");
     fprintf(stderr, " -bio_pair     - Use BIO pairs\n");
     fprintf(stderr, " -ipv4         - Use IPv4 connection on localhost\n");
     fprintf(stderr, " -ipv6         - Use IPv6 connection on localhost\n");
@@ -777,7 +779,7 @@ static void print_details(SSL *c_ssl, const char *prefix)
         }
         X509_free(cert);
     }
-    if (SSL_get_server_tmp_key(c_ssl, &pkey)) {
+    if (SSL_get_peer_tmp_key(c_ssl, &pkey)) {
         BIO_puts(bio_stdout, ", temp key: ");
         print_key_details(bio_stdout, pkey);
         EVP_PKEY_free(pkey);
@@ -882,7 +884,6 @@ int main(int argc, char *argv[])
     int server_auth = 0, i;
     struct app_verify_arg app_verify_arg =
         { APP_CALLBACK_STRING, 0 };
-    char *p;
     SSL_CTX *c_ctx = NULL;
     const SSL_METHOD *meth = NULL;
     SSL *c_ssl, *s_ssl;
@@ -918,15 +919,8 @@ int main(int argc, char *argv[])
 
     verbose = 0;
     debug = 0;
-    cipher = 0;
 
     bio_err = BIO_new_fp(stderr, BIO_NOCLOSE | BIO_FP_TEXT);
-
-    p = getenv("OPENSSL_DEBUG_MEMORY");
-    if (p != NULL && strcmp(p, "on") == 0)
-        CRYPTO_set_mem_debug(1);
-    CRYPTO_mem_ctrl(CRYPTO_MEM_CHECK_ON);
-
     bio_stdout = BIO_new_fp(stdout, BIO_NOCLOSE | BIO_FP_TEXT);
 
     s_cctx = SSL_CONF_CTX_new();
@@ -1046,6 +1040,10 @@ int main(int argc, char *argv[])
             if (--argc < 1)
                 goto bad;
             cipher = *(++argv);
+        } else if (strcmp(*argv, "-ciphersuites") == 0) {
+            if (--argc < 1)
+                goto bad;
+            ciphersuites = *(++argv);
         } else if (strcmp(*argv, "-CApath") == 0) {
             if (--argc < 1)
                 goto bad;
@@ -1325,17 +1323,24 @@ int main(int argc, char *argv[])
     } else if (tls1_2) {
         min_version = TLS1_2_VERSION;
         max_version = TLS1_2_VERSION;
+    } else {
+        min_version = 0;
+        max_version = 0;
     }
 #endif
 #ifndef OPENSSL_NO_DTLS
-    if (dtls || dtls1 || dtls12)
+    if (dtls || dtls1 || dtls12) {
         meth = DTLS_method();
-    if (dtls1) {
-        min_version = DTLS1_VERSION;
-        max_version = DTLS1_VERSION;
-    } else if (dtls12) {
-        min_version = DTLS1_2_VERSION;
-        max_version = DTLS1_2_VERSION;
+        if (dtls1) {
+            min_version = DTLS1_VERSION;
+            max_version = DTLS1_VERSION;
+        } else if (dtls12) {
+            min_version = DTLS1_2_VERSION;
+            max_version = DTLS1_2_VERSION;
+        } else {
+            min_version = 0;
+            max_version = 0;
+        }
     }
 #endif
 
@@ -1370,9 +1375,58 @@ int main(int argc, char *argv[])
         goto end;
 
     if (cipher != NULL) {
-        if (!SSL_CTX_set_cipher_list(c_ctx, cipher)
-            || !SSL_CTX_set_cipher_list(s_ctx, cipher)
-            || !SSL_CTX_set_cipher_list(s_ctx2, cipher)) {
+        if (strcmp(cipher, "") == 0) {
+            if (!SSL_CTX_set_cipher_list(c_ctx, cipher)) {
+                if (ERR_GET_REASON(ERR_peek_error()) == SSL_R_NO_CIPHER_MATCH) {
+                    ERR_clear_error();
+                } else {
+                    ERR_print_errors(bio_err);
+                    goto end;
+                }
+            } else {
+                /* Should have failed when clearing all TLSv1.2 ciphers. */
+                fprintf(stderr, "CLEARING ALL TLSv1.2 CIPHERS SHOULD FAIL\n");
+                goto end;
+            }
+
+            if (!SSL_CTX_set_cipher_list(s_ctx, cipher)) {
+                if (ERR_GET_REASON(ERR_peek_error()) == SSL_R_NO_CIPHER_MATCH) {
+                    ERR_clear_error();
+                } else {
+                    ERR_print_errors(bio_err);
+                    goto end;
+                }
+            } else {
+                /* Should have failed when clearing all TLSv1.2 ciphers. */
+                fprintf(stderr, "CLEARING ALL TLSv1.2 CIPHERS SHOULD FAIL\n");
+                goto end;
+            }
+
+            if (!SSL_CTX_set_cipher_list(s_ctx2, cipher)) {
+                if (ERR_GET_REASON(ERR_peek_error()) == SSL_R_NO_CIPHER_MATCH) {
+                    ERR_clear_error();
+                } else {
+                    ERR_print_errors(bio_err);
+                    goto end;
+                }
+            } else {
+                /* Should have failed when clearing all TLSv1.2 ciphers. */
+                fprintf(stderr, "CLEARING ALL TLSv1.2 CIPHERS SHOULD FAIL\n");
+                goto end;
+            }
+        } else {
+            if (!SSL_CTX_set_cipher_list(c_ctx, cipher)
+                    || !SSL_CTX_set_cipher_list(s_ctx, cipher)
+                    || !SSL_CTX_set_cipher_list(s_ctx2, cipher)) {
+                ERR_print_errors(bio_err);
+                goto end;
+            }
+        }
+    }
+    if (ciphersuites != NULL) {
+        if (!SSL_CTX_set_ciphersuites(c_ctx, ciphersuites)
+            || !SSL_CTX_set_ciphersuites(s_ctx, ciphersuites)
+            || !SSL_CTX_set_ciphersuites(s_ctx2, ciphersuites)) {
             ERR_print_errors(bio_err);
             goto end;
         }
@@ -1431,12 +1485,15 @@ int main(int argc, char *argv[])
     (void)no_dhe;
 #endif
 
-    if ((!SSL_CTX_load_verify_locations(s_ctx, CAfile, CApath)) ||
-        (!SSL_CTX_set_default_verify_paths(s_ctx)) ||
-        (!SSL_CTX_load_verify_locations(s_ctx2, CAfile, CApath)) ||
-        (!SSL_CTX_set_default_verify_paths(s_ctx2)) ||
-        (!SSL_CTX_load_verify_locations(c_ctx, CAfile, CApath)) ||
-        (!SSL_CTX_set_default_verify_paths(c_ctx))) {
+    if (!(SSL_CTX_load_verify_file(s_ctx, CAfile)
+          || SSL_CTX_load_verify_dir(s_ctx, CApath))
+        || !SSL_CTX_set_default_verify_paths(s_ctx)
+        || !(SSL_CTX_load_verify_file(s_ctx2, CAfile)
+             || SSL_CTX_load_verify_dir(s_ctx2, CApath))
+        || !SSL_CTX_set_default_verify_paths(s_ctx2)
+        || !(SSL_CTX_load_verify_file(c_ctx, CAfile)
+             || SSL_CTX_load_verify_dir(c_ctx, CApath))
+        || !SSL_CTX_set_default_verify_paths(c_ctx)) {
         ERR_print_errors(bio_err);
     }
 
@@ -1796,10 +1853,6 @@ int main(int argc, char *argv[])
     SSL_SESSION_free(server_sess);
     SSL_SESSION_free(client_sess);
 
-#ifndef OPENSSL_NO_CRYPTO_MDEBUG
-    if (CRYPTO_mem_leaks(bio_err) <= 0)
-        ret = EXIT_FAILURE;
-#endif
     BIO_free(bio_err);
     EXIT(ret);
 }
@@ -1816,7 +1869,8 @@ int doit_localhost(SSL *s_ssl, SSL *c_ssl, int family, long count,
     int err_in_client = 0;
     int err_in_server = 0;
 
-    acpt = BIO_new_accept("0");
+    acpt = BIO_new_accept(family == BIO_FAMILY_IPV4 ? "127.0.0.1:0"
+                                                    : "[::1]:0");
     if (acpt == NULL)
         goto err;
     BIO_set_accept_ip_family(acpt, family);
@@ -2815,7 +2869,7 @@ static int app_verify_callback(X509_STORE_CTX *ctx, void *arg)
  *    $ openssl dhparam -C -noout -dsaparam 1024
  * (The third function has been renamed to avoid name conflicts.)
  */
-static DH *get_dh512()
+static DH *get_dh512(void)
 {
     static unsigned char dh512_p[] = {
         0xCB, 0xC8, 0xE1, 0x86, 0xD0, 0x1F, 0x94, 0x17, 0xA6, 0x99, 0xF0,
@@ -2849,7 +2903,7 @@ static DH *get_dh512()
     return dh;
 }
 
-static DH *get_dh1024()
+static DH *get_dh1024(void)
 {
     static unsigned char dh1024_p[] = {
         0xF8, 0x81, 0x89, 0x7D, 0x14, 0x24, 0xC5, 0xD1, 0xE6, 0xF7, 0xBF,
@@ -2893,7 +2947,7 @@ static DH *get_dh1024()
     return dh;
 }
 
-static DH *get_dh1024dsa()
+static DH *get_dh1024dsa(void)
 {
     static unsigned char dh1024_p[] = {
         0xC8, 0x00, 0xF7, 0x08, 0x07, 0x89, 0x4D, 0x90, 0x53, 0xF3, 0xD5,

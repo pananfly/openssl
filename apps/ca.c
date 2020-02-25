@@ -1,7 +1,7 @@
 /*
- * Copyright 1995-2017 The OpenSSL Project Authors. All Rights Reserved.
+ * Copyright 1995-2018 The OpenSSL Project Authors. All Rights Reserved.
  *
- * Licensed under the OpenSSL license (the "License").  You may not use
+ * Licensed under the Apache License 2.0 (the "License").  You may not use
  * this file except in compliance with the License.  You can obtain a copy
  * in the file LICENSE in the source distribution or at
  * https://www.openssl.org/source/license.html
@@ -32,6 +32,7 @@
 #endif
 
 #include "apps.h"
+#include "progs.h"
 
 #ifndef W_OK
 # define F_OK 0
@@ -95,7 +96,8 @@ static int certify(X509 **xret, const char *infile, EVP_PKEY *pkey, X509 *x509,
                    const char *enddate,
                    long days, int batch, const char *ext_sect, CONF *conf,
                    int verbose, unsigned long certopt, unsigned long nameopt,
-                   int default_op, int ext_copy, int selfsign);
+                   int default_op, int ext_copy, int selfsign,
+                   unsigned char *sm2_id, size_t sm2idlen);
 static int certify_cert(X509 **xret, const char *infile, EVP_PKEY *pkey, X509 *x509,
                         const EVP_MD *dgst, STACK_OF(OPENSSL_STRING) *sigopts,
                         STACK_OF(CONF_VALUE) *policy, CA_DB *db,
@@ -146,16 +148,38 @@ typedef enum OPTION_choice {
     OPT_INFILES, OPT_SS_CERT, OPT_SPKAC, OPT_REVOKE, OPT_VALID,
     OPT_EXTENSIONS, OPT_EXTFILE, OPT_STATUS, OPT_UPDATEDB, OPT_CRLEXTS,
     OPT_RAND_SERIAL,
-    OPT_R_ENUM,
+    OPT_R_ENUM, OPT_SM2ID, OPT_SM2HEXID,
     /* Do not change the order here; see related case statements below */
     OPT_CRL_REASON, OPT_CRL_HOLD, OPT_CRL_COMPROMISE, OPT_CRL_CA_COMPROMISE
 } OPTION_CHOICE;
 
 const OPTIONS ca_options[] = {
+    {OPT_HELP_STR, 1, '-', "Usage: %s [options] [certreq...]\n"},
+
+    OPT_SECTION("General"),
     {"help", OPT_HELP, '-', "Display this summary"},
     {"verbose", OPT_VERBOSE, '-', "Verbose output during processing"},
+    {"outdir", OPT_OUTDIR, '/', "Where to put output cert"},
+    {"in", OPT_IN, '<', "The input PEM encoded cert request(s)"},
+    {"infiles", OPT_INFILES, '-', "The last argument, requests to process"},
+    {"out", OPT_OUT, '>', "Where to put the output file(s)"},
+    {"notext", OPT_NOTEXT, '-', "Do not print the generated certificate"},
+    {"batch", OPT_BATCH, '-', "Don't ask questions"},
+    {"msie_hack", OPT_MSIE_HACK, '-',
+     "msie modifications to handle all Universal Strings"},
+    {"ss_cert", OPT_SS_CERT, '<', "File contains a self signed cert to sign"},
+    {"spkac", OPT_SPKAC, '<',
+     "File contains DN and signed public key and challenge"},
+#ifndef OPENSSL_NO_ENGINE
+    {"engine", OPT_ENGINE, 's', "Use engine, possibly a hardware device"},
+#endif
+
+    OPT_SECTION("Configuration"),
     {"config", OPT_CONFIG, 's', "A config file"},
     {"name", OPT_NAME, 's', "The particular CA definition to use"},
+    {"policy", OPT_POLICY, 's', "The CA 'policy' to support"},
+
+    OPT_SECTION("Certificate"),
     {"subj", OPT_SUBJ, 's', "Use arg instead of request's subject"},
     {"utf8", OPT_UTF8, '-', "Input characters are UTF8 (default ASCII)"},
     {"create_serial", OPT_CREATE_SERIAL, '-',
@@ -168,8 +192,21 @@ const OPTIONS ca_options[] = {
     {"enddate", OPT_ENDDATE, 's',
      "YYMMDDHHMMSSZ cert notAfter (overrides -days)"},
     {"days", OPT_DAYS, 'p', "Number of days to certify the cert for"},
+    {"extensions", OPT_EXTENSIONS, 's',
+     "Extension section (override value in config file)"},
+    {"extfile", OPT_EXTFILE, '<',
+     "Configuration file with X509v3 extensions to add"},
+#ifndef OPENSSL_NO_SM2
+    {"sm2-id", OPT_SM2ID, 's',
+     "Specify an ID string to verify an SM2 certificate request"},
+    {"sm2-hex-id", OPT_SM2HEXID, 's',
+     "Specify a hex ID string to verify an SM2 certificate request"},
+#endif
+    {"preserveDN", OPT_PRESERVEDN, '-', "Don't re-order the DN"},
+    {"noemailDN", OPT_NOEMAILDN, '-', "Don't add the EMAIL field to the DN"},
+
+    OPT_SECTION("Signing"),
     {"md", OPT_MD, 's', "md to use; one of md2, md5, sha or sha1"},
-    {"policy", OPT_POLICY, 's', "The CA 'policy' to support"},
     {"keyfile", OPT_KEYFILE, 's', "Private key"},
     {"keyform", OPT_KEYFORM, 'f', "Private key file format (PEM or ENGINE)"},
     {"passin", OPT_PASSIN, 's', "Input file pass phrase source"},
@@ -177,31 +214,12 @@ const OPTIONS ca_options[] = {
     {"cert", OPT_CERT, '<', "The CA cert"},
     {"selfsign", OPT_SELFSIGN, '-',
      "Sign a cert with the key associated with it"},
-    {"in", OPT_IN, '<', "The input PEM encoded cert request(s)"},
-    {"out", OPT_OUT, '>', "Where to put the output file(s)"},
-    {"outdir", OPT_OUTDIR, '/', "Where to put output cert"},
     {"sigopt", OPT_SIGOPT, 's', "Signature parameter in n:v form"},
-    {"notext", OPT_NOTEXT, '-', "Do not print the generated certificate"},
-    {"batch", OPT_BATCH, '-', "Don't ask questions"},
-    {"preserveDN", OPT_PRESERVEDN, '-', "Don't re-order the DN"},
-    {"noemailDN", OPT_NOEMAILDN, '-', "Don't add the EMAIL field to the DN"},
+
+    OPT_SECTION("Revocation"),
     {"gencrl", OPT_GENCRL, '-', "Generate a new CRL"},
-    {"msie_hack", OPT_MSIE_HACK, '-',
-     "msie modifications to handle all those universal strings"},
-    {"crldays", OPT_CRLDAYS, 'p', "Days until the next CRL is due"},
-    {"crlhours", OPT_CRLHOURS, 'p', "Hours until the next CRL is due"},
-    {"crlsec", OPT_CRLSEC, 'p', "Seconds until the next CRL is due"},
-    {"infiles", OPT_INFILES, '-', "The last argument, requests to process"},
-    {"ss_cert", OPT_SS_CERT, '<', "File contains a self signed cert to sign"},
-    {"spkac", OPT_SPKAC, '<',
-     "File contains DN and signed public key and challenge"},
-    {"revoke", OPT_REVOKE, '<', "Revoke a cert (given in file)"},
     {"valid", OPT_VALID, 's',
      "Add a Valid(not-revoked) DB entry about a cert (given in file)"},
-    {"extensions", OPT_EXTENSIONS, 's',
-     "Extension section (override value in config file)"},
-    {"extfile", OPT_EXTFILE, '<',
-     "Configuration file with X509v3 extensions to add"},
     {"status", OPT_STATUS, 's', "Shows cert status given the serial number"},
     {"updatedb", OPT_UPDATEDB, '-', "Updates db for expired cert"},
     {"crlexts", OPT_CRLEXTS, 's',
@@ -213,10 +231,15 @@ const OPTIONS ca_options[] = {
      "sets compromise time to val and the revocation reason to keyCompromise"},
     {"crl_CA_compromise", OPT_CRL_CA_COMPROMISE, 's',
      "sets compromise time to val and the revocation reason to CACompromise"},
+    {"crldays", OPT_CRLDAYS, 'p', "Days until the next CRL is due"},
+    {"crlhours", OPT_CRLHOURS, 'p', "Hours until the next CRL is due"},
+    {"crlsec", OPT_CRLSEC, 'p', "Seconds until the next CRL is due"},
+    {"revoke", OPT_REVOKE, '<', "Revoke a cert (given in file)"},
+
     OPT_R_OPTIONS,
-#ifndef OPENSSL_NO_ENGINE
-    {"engine", OPT_ENGINE, 's', "Use engine, possibly a hardware device"},
-#endif
+
+    OPT_PARAMETERS(),
+    {"certreq", 0, 0, "Certificate requests to be signed (optional)"},
     {NULL}
 };
 
@@ -254,13 +277,16 @@ int ca_main(int argc, char **argv)
     int batch = 0, default_op = 1, doupdatedb = 0, ext_copy = EXT_COPY_NONE;
     int keyformat = FORMAT_PEM, multirdn = 0, notext = 0, output_der = 0;
     int ret = 1, email_dn = 1, req = 0, verbose = 0, gencrl = 0, dorevoke = 0;
-    int rand_ser = 0, i, j, selfsign = 0;
+    int rand_ser = 0, i, j, selfsign = 0, def_nid, def_ret;
     long crldays = 0, crlhours = 0, crlsec = 0, days = 0;
     unsigned long chtype = MBSTRING_ASC, certopt = 0;
     X509 *x509 = NULL, *x509p = NULL, *x = NULL;
     REVINFO_TYPE rev_type = REV_NONE;
     X509_REVOKED *r = NULL;
     OPTION_CHOICE o;
+    unsigned char *sm2_id = NULL;
+    size_t sm2_idlen = 0;
+    int sm2_free = 0;
 
     prog = opt_init(argc, argv, ca_options);
     while ((o = opt_next()) != OPT_EOF) {
@@ -424,6 +450,30 @@ opthelp:
         case OPT_ENGINE:
             e = setup_engine(opt_arg(), 0);
             break;
+        case OPT_SM2ID:
+            /* we assume the input is not a hex string */
+            if (sm2_id != NULL) {
+                BIO_printf(bio_err,
+                           "Use one of the options 'sm2-hex-id' or 'sm2-id'\n");
+                goto end;
+            }
+            sm2_id = (unsigned char *)opt_arg();
+            sm2_idlen = strlen((const char *)sm2_id);
+            break;
+        case OPT_SM2HEXID:
+            /* try to parse the input as hex string first */
+            if (sm2_id != NULL) {
+                BIO_printf(bio_err,
+                           "Use one of the options 'sm2-hex-id' or 'sm2-id'\n");
+                goto end;
+            }
+            sm2_free = 1;
+            sm2_id = OPENSSL_hexstr2buf(opt_arg(), (long *)&sm2_idlen);
+            if (sm2_id == NULL) {
+                BIO_printf(bio_err, "Invalid hex string input\n");
+                goto end;
+            }
+            break;
         }
     }
 end_of_options:
@@ -497,7 +547,7 @@ end_of_options:
         if (db == NULL)
             goto end;
 
-        if (!index_index(db))
+        if (index_index(db) <= 0)
             goto end;
 
         if (get_certificate_status(ser_status, db) != 1)
@@ -604,7 +654,7 @@ end_of_options:
         /*
          * outdir is a directory spec, but access() for VMS demands a
          * filename.  We could use the DEC C routine to convert the
-         * directory syntax to Unixly, and give that to app_isdir,
+         * directory syntax to Unix, and give that to app_isdir,
          * but for now the fopen will catch the error if it's not a
          * directory
          */
@@ -671,7 +721,7 @@ end_of_options:
         BIO_printf(bio_err, "generating index\n");
     }
 
-    if (!index_index(db))
+    if (index_index(db) <= 0)
         goto end;
 
     /*****************************************************************/
@@ -721,26 +771,34 @@ end_of_options:
 
     /*****************************************************************/
     if (req || gencrl) {
-        /* FIXME: Is it really always text? */
-        Sout = bio_open_default(outfile, 'w', FORMAT_TEXT);
-        if (Sout == NULL)
-            goto end;
-    }
-
-    if (md == NULL && (md = lookup_conf(conf, section, ENV_DEFAULT_MD)) == NULL)
-        goto end;
-
-    if (strcmp(md, "default") == 0) {
-        int def_nid;
-        if (EVP_PKEY_get_default_digest_nid(pkey, &def_nid) <= 0) {
-            BIO_puts(bio_err, "no default digest\n");
-            goto end;
+        if (spkac_file != NULL && outfile != NULL) {
+            output_der = 1;
+            batch = 1;
         }
-        md = (char *)OBJ_nid2sn(def_nid);
     }
 
-    if (!opt_md(md, &dgst)) {
+    def_ret = EVP_PKEY_get_default_digest_nid(pkey, &def_nid);
+    /*
+     * EVP_PKEY_get_default_digest_nid() returns 2 if the digest is
+     * mandatory for this algorithm.
+     */
+    if (def_ret == 2 && def_nid == NID_undef) {
+        /* The signing algorithm requires there to be no digest */
+        dgst = EVP_md_null();
+    } else if (md == NULL
+               && (md = lookup_conf(conf, section, ENV_DEFAULT_MD)) == NULL) {
         goto end;
+    } else {
+        if (strcmp(md, "default") == 0) {
+            if (def_ret <= 0) {
+                BIO_puts(bio_err, "no default digest\n");
+                goto end;
+            }
+            md = (char *)OBJ_nid2sn(def_nid);
+        }
+
+        if (!opt_md(md, &dgst))
+            goto end;
     }
 
     if (req) {
@@ -876,10 +934,6 @@ end_of_options:
                     BIO_printf(bio_err, "Memory allocation failure\n");
                     goto end;
                 }
-                if (outfile) {
-                    output_der = 1;
-                    batch = 1;
-                }
             }
         }
         if (ss_cert_file != NULL) {
@@ -908,7 +962,8 @@ end_of_options:
             j = certify(&x, infile, pkey, x509p, dgst, sigopts, attribs, db,
                         serial, subj, chtype, multirdn, email_dn, startdate,
                         enddate, days, batch, extensions, conf, verbose,
-                        certopt, get_nameopt(), default_op, ext_copy, selfsign);
+                        certopt, get_nameopt(), default_op, ext_copy, selfsign,
+                        sm2_id, sm2_idlen);
             if (j < 0)
                 goto end;
             if (j > 0) {
@@ -927,16 +982,20 @@ end_of_options:
             j = certify(&x, argv[i], pkey, x509p, dgst, sigopts, attribs, db,
                         serial, subj, chtype, multirdn, email_dn, startdate,
                         enddate, days, batch, extensions, conf, verbose,
-                        certopt, get_nameopt(), default_op, ext_copy, selfsign);
+                        certopt, get_nameopt(), default_op, ext_copy, selfsign,
+                        sm2_id, sm2_idlen);
             if (j < 0)
                 goto end;
             if (j > 0) {
                 total_done++;
                 BIO_printf(bio_err, "\n");
-                if (!BN_add_word(serial, 1))
+                if (!BN_add_word(serial, 1)) {
+                    X509_free(x);
                     goto end;
+                }
                 if (!sk_X509_push(cert_sk, x)) {
                     BIO_printf(bio_err, "Memory allocation failure\n");
+                    X509_free(x);
                     goto end;
                 }
             }
@@ -968,7 +1027,7 @@ end_of_options:
             BIO_printf(bio_err, "Write out database with %d new entries\n",
                        sk_X509_num(cert_sk));
 
-            if (!rand_ser
+            if (serialfile != NULL
                     && !save_serial(serialfile, "new", serial, NULL))
                 goto end;
 
@@ -1017,6 +1076,11 @@ end_of_options:
             if (verbose)
                 BIO_printf(bio_err, "writing %s\n", new_cert);
 
+            Sout = bio_open_default(outfile, 'w',
+                                    output_der ? FORMAT_ASN1 : FORMAT_TEXT);
+            if (Sout == NULL)
+                goto end;
+
             Cout = BIO_new_file(new_cert, "w");
             if (Cout == NULL) {
                 perror(new_cert);
@@ -1025,11 +1089,14 @@ end_of_options:
             write_new_certificate(Cout, xi, 0, notext);
             write_new_certificate(Sout, xi, output_der, notext);
             BIO_free_all(Cout);
+            BIO_free_all(Sout);
+            Sout = NULL;
         }
 
         if (sk_X509_num(cert_sk)) {
             /* Rename the database and the serial file */
-            if (!rotate_serial(serialfile, "new", "old"))
+            if (serialfile != NULL
+                    && !rotate_serial(serialfile, "new", "old"))
                 goto end;
 
             if (!rotate_index(dbfile, "new", "old"))
@@ -1090,13 +1157,13 @@ end_of_options:
             goto end;
 
         tmptm = ASN1_TIME_new();
-        if (tmptm == NULL)
-            goto end;
-        X509_gmtime_adj(tmptm, 0);
-        X509_CRL_set1_lastUpdate(crl, tmptm);
-        if (!X509_time_adj_ex(tmptm, crldays, crlhours * 60 * 60 + crlsec,
-                              NULL)) {
+        if (tmptm == NULL
+                || X509_gmtime_adj(tmptm, 0) == NULL
+                || !X509_CRL_set1_lastUpdate(crl, tmptm)
+                || X509_time_adj_ex(tmptm, crldays, crlhours * 60 * 60 + crlsec,
+                                    NULL) == NULL) {
             BIO_puts(bio_err, "error setting CRL nextUpdate\n");
+            ASN1_TIME_free(tmptm);
             goto end;
         }
         X509_CRL_set1_nextUpdate(crl, tmptm);
@@ -1162,10 +1229,9 @@ end_of_options:
         }
 
         /* we have a CRL number that need updating */
-        if (crlnumberfile != NULL)
-            if (!rand_ser
-                    && !save_serial(crlnumberfile, "new", crlnumber, NULL))
-                goto end;
+        if (crlnumberfile != NULL
+                && !save_serial(crlnumberfile, "new", crlnumber, NULL))
+            goto end;
 
         BN_free(crlnumber);
         crlnumber = NULL;
@@ -1173,11 +1239,17 @@ end_of_options:
         if (!do_X509_CRL_sign(crl, pkey, dgst, sigopts))
             goto end;
 
+        Sout = bio_open_default(outfile, 'w',
+                                output_der ? FORMAT_ASN1 : FORMAT_TEXT);
+        if (Sout == NULL)
+            goto end;
+
         PEM_write_bio_X509_CRL(Sout, crl);
 
-        if (crlnumberfile != NULL) /* Rename the crlnumber file */
-            if (!rotate_serial(crlnumberfile, "new", "old"))
-                goto end;
+        /* Rename the crlnumber file */
+        if (crlnumberfile != NULL
+                && !rotate_serial(crlnumberfile, "new", "old"))
+            goto end;
 
     }
     /*****************************************************************/
@@ -1209,6 +1281,8 @@ end_of_options:
     ret = 0;
 
  end:
+    if (sm2_free)
+        OPENSSL_free(sm2_id);
     if (ret)
         ERR_print_errors(bio_err);
     BIO_free_all(Sout);
@@ -1247,7 +1321,8 @@ static int certify(X509 **xret, const char *infile, EVP_PKEY *pkey, X509 *x509,
                    const char *enddate,
                    long days, int batch, const char *ext_sect, CONF *lconf,
                    int verbose, unsigned long certopt, unsigned long nameopt,
-                   int default_op, int ext_copy, int selfsign)
+                   int default_op, int ext_copy, int selfsign,
+                   unsigned char *sm2id, size_t sm2idlen)
 {
     X509_REQ *req = NULL;
     BIO *in = NULL;
@@ -1278,6 +1353,25 @@ static int certify(X509 **xret, const char *infile, EVP_PKEY *pkey, X509 *x509,
     if ((pktmp = X509_REQ_get0_pubkey(req)) == NULL) {
         BIO_printf(bio_err, "error unpacking public key\n");
         goto end;
+    }
+    if (sm2id != NULL) {
+#ifndef OPENSSL_NO_SM2
+        ASN1_OCTET_STRING *v;
+
+        v = ASN1_OCTET_STRING_new();
+        if (v == NULL) {
+            BIO_printf(bio_err, "error: SM2 ID allocation failed\n");
+            goto end;
+        }
+
+        if (!ASN1_OCTET_STRING_set(v, sm2id, sm2idlen)) {
+            BIO_printf(bio_err, "error: setting SM2 ID failed\n");
+            ASN1_OCTET_STRING_free(v);
+            goto end;
+        }
+
+        X509_REQ_set0_sm2_id(req, v);
+#endif
     }
     i = X509_REQ_verify(req, pktmp);
     pktmp = NULL;
@@ -1370,7 +1464,7 @@ static int do_body(X509 **xret, EVP_PKEY *pkey, X509 *x509,
                    CONF *lconf, unsigned long certopt, unsigned long nameopt,
                    int default_op, int ext_copy, int selfsign)
 {
-    X509_NAME *name = NULL, *CAname = NULL, *subject = NULL, *dn_subject = NULL;
+    X509_NAME *name = NULL, *CAname = NULL, *subject = NULL;
     const ASN1_TIME *tm;
     ASN1_STRING *str, *str2;
     ASN1_OBJECT *obj;
@@ -1547,7 +1641,6 @@ static int do_body(X509 **xret, EVP_PKEY *pkey, X509 *x509,
 
             if (push != NULL) {
                 if (!X509_NAME_add_entry(subject, push, -1, 0)) {
-                    X509_NAME_ENTRY_free(push);
                     BIO_printf(bio_err, "Memory allocation failure\n");
                     goto end;
                 }
@@ -1563,103 +1656,6 @@ static int do_body(X509 **xret, EVP_PKEY *pkey, X509 *x509,
         subject = X509_NAME_dup(name);
         if (subject == NULL)
             goto end;
-    }
-
-    if (verbose)
-        BIO_printf(bio_err,
-                   "The subject name appears to be ok, checking data base for clashes\n");
-
-    /*
-     * Build the correct Subject if no e-mail is wanted in the subject.
-     * And add it later on because of the method extensions are added (altName)
-     */
-
-    if (email_dn) {
-        dn_subject = subject;
-    } else {
-        X509_NAME_ENTRY *tmpne;
-        /*
-         * Its best to dup the subject DN and then delete any email addresses
-         * because this retains its structure.
-         */
-        if ((dn_subject = X509_NAME_dup(subject)) == NULL) {
-            BIO_printf(bio_err, "Memory allocation failure\n");
-            goto end;
-        }
-        while ((i = X509_NAME_get_index_by_NID(dn_subject,
-                                               NID_pkcs9_emailAddress,
-                                               -1)) >= 0) {
-            tmpne = X509_NAME_get_entry(dn_subject, i);
-            X509_NAME_delete_entry(dn_subject, i);
-            X509_NAME_ENTRY_free(tmpne);
-        }
-    }
-
-    if (BN_is_zero(serial))
-        row[DB_serial] = OPENSSL_strdup("00");
-    else
-        row[DB_serial] = BN_bn2hex(serial);
-    if (row[DB_serial] == NULL) {
-        BIO_printf(bio_err, "Memory allocation failure\n");
-        goto end;
-    }
-
-    if (db->attributes.unique_subject) {
-        OPENSSL_STRING *crow = row;
-
-        rrow = TXT_DB_get_by_index(db->db, DB_name, crow);
-        if (rrow != NULL) {
-            BIO_printf(bio_err,
-                       "ERROR:There is already a certificate for %s\n",
-                       row[DB_name]);
-        }
-    }
-    if (rrow == NULL) {
-        rrow = TXT_DB_get_by_index(db->db, DB_serial, row);
-        if (rrow != NULL) {
-            BIO_printf(bio_err,
-                       "ERROR:Serial number %s has already been issued,\n",
-                       row[DB_serial]);
-            BIO_printf(bio_err,
-                       "      check the database/serial_file for corruption\n");
-        }
-    }
-
-    if (rrow != NULL) {
-        BIO_printf(bio_err, "The matching entry has the following details\n");
-        if (rrow[DB_type][0] == DB_TYPE_EXP)
-            p = "Expired";
-        else if (rrow[DB_type][0] == DB_TYPE_REV)
-            p = "Revoked";
-        else if (rrow[DB_type][0] == DB_TYPE_VAL)
-            p = "Valid";
-        else
-            p = "\ninvalid type, Data base error\n";
-        BIO_printf(bio_err, "Type          :%s\n", p);;
-        if (rrow[DB_type][0] == DB_TYPE_REV) {
-            p = rrow[DB_exp_date];
-            if (p == NULL)
-                p = "undef";
-            BIO_printf(bio_err, "Was revoked on:%s\n", p);
-        }
-        p = rrow[DB_exp_date];
-        if (p == NULL)
-            p = "undef";
-        BIO_printf(bio_err, "Expires on    :%s\n", p);
-        p = rrow[DB_serial];
-        if (p == NULL)
-            p = "undef";
-        BIO_printf(bio_err, "Serial Number :%s\n", p);
-        p = rrow[DB_file];
-        if (p == NULL)
-            p = "undef";
-        BIO_printf(bio_err, "File name     :%s\n", p);
-        p = rrow[DB_name];
-        if (p == NULL)
-            p = "undef";
-        BIO_printf(bio_err, "Subject Name  :%s\n", p);
-        ok = -1;                /* This is now a 'bad' error. */
-        goto end;
     }
 
     /* We are now totally happy, lets make and sign the certificate */
@@ -1691,7 +1687,9 @@ static int do_body(X509 **xret, EVP_PKEY *pkey, X509 *x509,
 
     if (enddate != NULL) {
         int tdays;
-        ASN1_TIME_diff(&tdays, NULL, NULL, X509_get0_notAfter(ret));
+
+        if (!ASN1_TIME_diff(&tdays, NULL, NULL, X509_get0_notAfter(ret)))
+            goto end;
         days = tdays;
     }
 
@@ -1769,10 +1767,123 @@ static int do_body(X509 **xret, EVP_PKEY *pkey, X509 *x509,
                 goto end;
     }
 
-    /* Set the right value for the noemailDN option */
-    if (email_dn == 0) {
-        if (!X509_set_subject_name(ret, dn_subject))
+    if (verbose)
+        BIO_printf(bio_err,
+                   "The subject name appears to be ok, checking data base for clashes\n");
+
+    /* Build the correct Subject if no e-mail is wanted in the subject. */
+    if (!email_dn) {
+        X509_NAME_ENTRY *tmpne;
+        X509_NAME *dn_subject;
+
+        /*
+         * Its best to dup the subject DN and then delete any email addresses
+         * because this retains its structure.
+         */
+        if ((dn_subject = X509_NAME_dup(subject)) == NULL) {
+            BIO_printf(bio_err, "Memory allocation failure\n");
             goto end;
+        }
+        i = -1;
+        while ((i = X509_NAME_get_index_by_NID(dn_subject,
+                                               NID_pkcs9_emailAddress,
+                                               i)) >= 0) {
+            tmpne = X509_NAME_delete_entry(dn_subject, i--);
+            X509_NAME_ENTRY_free(tmpne);
+        }
+
+        if (!X509_set_subject_name(ret, dn_subject)) {
+            X509_NAME_free(dn_subject);
+            goto end;
+        }
+        X509_NAME_free(dn_subject);
+    }
+
+    row[DB_name] = X509_NAME_oneline(X509_get_subject_name(ret), NULL, 0);
+    if (row[DB_name] == NULL) {
+        BIO_printf(bio_err, "Memory allocation failure\n");
+        goto end;
+    }
+
+    if (BN_is_zero(serial))
+        row[DB_serial] = OPENSSL_strdup("00");
+    else
+        row[DB_serial] = BN_bn2hex(serial);
+    if (row[DB_serial] == NULL) {
+        BIO_printf(bio_err, "Memory allocation failure\n");
+        goto end;
+    }
+
+    if (row[DB_name][0] == '\0') {
+        /*
+         * An empty subject! We'll use the serial number instead. If
+         * unique_subject is in use then we don't want different entries with
+         * empty subjects matching each other.
+         */
+        OPENSSL_free(row[DB_name]);
+        row[DB_name] = OPENSSL_strdup(row[DB_serial]);
+        if (row[DB_name] == NULL) {
+            BIO_printf(bio_err, "Memory allocation failure\n");
+            goto end;
+        }
+    }
+
+    if (db->attributes.unique_subject) {
+        OPENSSL_STRING *crow = row;
+
+        rrow = TXT_DB_get_by_index(db->db, DB_name, crow);
+        if (rrow != NULL) {
+            BIO_printf(bio_err,
+                       "ERROR:There is already a certificate for %s\n",
+                       row[DB_name]);
+        }
+    }
+    if (rrow == NULL) {
+        rrow = TXT_DB_get_by_index(db->db, DB_serial, row);
+        if (rrow != NULL) {
+            BIO_printf(bio_err,
+                       "ERROR:Serial number %s has already been issued,\n",
+                       row[DB_serial]);
+            BIO_printf(bio_err,
+                       "      check the database/serial_file for corruption\n");
+        }
+    }
+
+    if (rrow != NULL) {
+        BIO_printf(bio_err, "The matching entry has the following details\n");
+        if (rrow[DB_type][0] == DB_TYPE_EXP)
+            p = "Expired";
+        else if (rrow[DB_type][0] == DB_TYPE_REV)
+            p = "Revoked";
+        else if (rrow[DB_type][0] == DB_TYPE_VAL)
+            p = "Valid";
+        else
+            p = "\ninvalid type, Data base error\n";
+        BIO_printf(bio_err, "Type          :%s\n", p);;
+        if (rrow[DB_type][0] == DB_TYPE_REV) {
+            p = rrow[DB_exp_date];
+            if (p == NULL)
+                p = "undef";
+            BIO_printf(bio_err, "Was revoked on:%s\n", p);
+        }
+        p = rrow[DB_exp_date];
+        if (p == NULL)
+            p = "undef";
+        BIO_printf(bio_err, "Expires on    :%s\n", p);
+        p = rrow[DB_serial];
+        if (p == NULL)
+            p = "undef";
+        BIO_printf(bio_err, "Serial Number :%s\n", p);
+        p = rrow[DB_file];
+        if (p == NULL)
+            p = "undef";
+        BIO_printf(bio_err, "File name     :%s\n", p);
+        p = rrow[DB_name];
+        if (p == NULL)
+            p = "undef";
+        BIO_printf(bio_err, "Subject Name  :%s\n", p);
+        ok = -1;                /* This is now a 'bad' error. */
+        goto end;
     }
 
     if (!default_op) {
@@ -1824,8 +1935,6 @@ static int do_body(X509 **xret, EVP_PKEY *pkey, X509 *x509,
     row[DB_exp_date][tm->length] = '\0';
     row[DB_rev_date] = NULL;
     row[DB_file] = OPENSSL_strdup("unknown");
-    row[DB_name] = X509_NAME_oneline(X509_get_subject_name(ret), NULL, 0);
-
     if ((row[DB_type] == NULL) || (row[DB_exp_date] == NULL) ||
         (row[DB_file] == NULL) || (row[DB_name] == NULL)) {
         BIO_printf(bio_err, "Memory allocation failure\n");
@@ -1845,16 +1954,14 @@ static int do_body(X509 **xret, EVP_PKEY *pkey, X509 *x509,
     irow = NULL;
     ok = 1;
  end:
-    if (irow != NULL) {
+    if (ok != 1) {
         for (i = 0; i < DB_NUMBER; i++)
             OPENSSL_free(row[i]);
-        OPENSSL_free(irow);
     }
+    OPENSSL_free(irow);
 
     X509_NAME_free(CAname);
     X509_NAME_free(subject);
-    if (dn_subject != subject)
-        X509_NAME_free(dn_subject);
     if (ok <= 0)
         X509_free(ret);
     else
@@ -2034,6 +2141,11 @@ static int do_revoke(X509 *x509, CA_DB *db, REVINFO_TYPE rev_type,
     else
         row[DB_serial] = BN_bn2hex(bn);
     BN_free(bn);
+    if (row[DB_name] != NULL && row[DB_name][0] == '\0') {
+        /* Entries with empty Subjects actually use the serial number instead */
+        OPENSSL_free(row[DB_name]);
+        row[DB_name] = OPENSSL_strdup(row[DB_serial]);
+    }
     if ((row[DB_name] == NULL) || (row[DB_serial] == NULL)) {
         BIO_printf(bio_err, "Memory allocation failure\n");
         goto end;
@@ -2194,7 +2306,10 @@ static int do_updatedb(CA_DB *db)
         return -1;
 
     /* get actual time and make a string */
-    a_tm = X509_gmtime_adj(a_tm, 0);
+    if (X509_gmtime_adj(a_tm, 0) == NULL) {
+        ASN1_UTCTIME_free(a_tm);
+        return -1;
+    }
     a_tm_s = app_malloc(a_tm->length + 1, "time string");
 
     memcpy(a_tm_s, a_tm->data, a_tm->length);

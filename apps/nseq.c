@@ -1,7 +1,7 @@
 /*
- * Copyright 1999-2016 The OpenSSL Project Authors. All Rights Reserved.
+ * Copyright 1999-2018 The OpenSSL Project Authors. All Rights Reserved.
  *
- * Licensed under the OpenSSL license (the "License").  You may not use
+ * Licensed under the Apache License 2.0 (the "License").  You may not use
  * this file except in compliance with the License.  You can obtain a copy
  * in the file LICENSE in the source distribution or at
  * https://www.openssl.org/source/license.html
@@ -10,6 +10,7 @@
 #include <stdio.h>
 #include <string.h>
 #include "apps.h"
+#include "progs.h"
 #include <openssl/pem.h>
 #include <openssl/err.h>
 
@@ -19,9 +20,14 @@ typedef enum OPTION_choice {
 } OPTION_CHOICE;
 
 const OPTIONS nseq_options[] = {
+    OPT_SECTION("General"),
     {"help", OPT_HELP, '-', "Display this summary"},
-    {"toseq", OPT_TOSEQ, '-', "Output NS Sequence file"},
+
+    OPT_SECTION("Input"),
     {"in", OPT_IN, '<', "Input file"},
+
+    OPT_SECTION("Output"),
+    {"toseq", OPT_TOSEQ, '-', "Output NS Sequence file"},
     {"out", OPT_OUT, '>', "Output file"},
     {NULL}
 };

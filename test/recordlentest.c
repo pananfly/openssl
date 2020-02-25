@@ -1,7 +1,7 @@
 /*
- * Copyright 2017 The OpenSSL Project Authors. All Rights Reserved.
+ * Copyright 2017-2018 The OpenSSL Project Authors. All Rights Reserved.
  *
- * Licensed under the OpenSSL license (the "License").  You may not use
+ * Licensed under the Apache License 2.0 (the "License").  You may not use
  * this file except in compliance with the License.  You can obtain a copy
  * in the file LICENSE in the source distribution or at
  * https://www.openssl.org/source/license.html
@@ -103,6 +103,7 @@ static int test_record_overflow(int idx)
     ERR_clear_error();
 
     if (!TEST_true(create_ssl_ctx_pair(TLS_server_method(), TLS_client_method(),
+                                       TLS1_VERSION, 0,
                                        &sctx, &cctx, cert, privkey)))
         goto end;
 
@@ -157,11 +158,7 @@ static int test_record_overflow(int idx)
         overf_expected = 0;
     }
 
-    if (idx == TEST_ENCRYPTED_OVERFLOW_TLS1_3_OK
-            || idx == TEST_ENCRYPTED_OVERFLOW_TLS1_3_NOT_OK)
-        recversion = TLS1_VERSION;
-    else
-        recversion = TLS1_2_VERSION;
+    recversion = TLS1_2_VERSION;
 
     if (!TEST_true(write_record(serverbio, len, SSL3_RT_APPLICATION_DATA,
                                 recversion)))
@@ -183,6 +180,8 @@ static int test_record_overflow(int idx)
     SSL_CTX_free(cctx);
     return testresult;
 }
+
+OPT_TEST_DECLARE_USAGE("certfile privkeyfile\n")
 
 int setup_tests(void)
 {

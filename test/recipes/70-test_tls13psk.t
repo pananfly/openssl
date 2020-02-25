@@ -1,7 +1,7 @@
 #! /usr/bin/env perl
-# Copyright 2017 The OpenSSL Project Authors. All Rights Reserved.
+# Copyright 2017-2018 The OpenSSL Project Authors. All Rights Reserved.
 #
-# Licensed under the OpenSSL license (the "License").  You may not use
+# Licensed under the Apache License 2.0 (the "License").  You may not use
 # this file except in compliance with the License.  You can obtain a copy
 # in the file LICENSE in the source distribution or at
 # https://www.openssl.org/source/license.html
@@ -16,7 +16,7 @@ my $test_name = "test_tls13psk";
 setup($test_name);
 
 plan skip_all => "TLSProxy isn't usable on $^O"
-    if $^O =~ /^(VMS|MSWin32)$/;
+    if $^O =~ /^(VMS)$/;
 
 plan skip_all => "$test_name needs the dynamic engine feature enabled"
     if disabled("engine") || disabled("dynamic-engine");
@@ -63,10 +63,14 @@ $proxy->start();
 ok(TLSProxy::Message->fail(), "PSK not last");
 
 #Test 3: Attempt a resume after an HRR where PSK hash matches selected
-#        ciperhsuite. Should see PSK on second ClientHello
+#        ciphersuite. Should see PSK on second ClientHello
 $proxy->clear();
 $proxy->clientflags("-sess_in ".$session);
-$proxy->serverflags("-curves P-256");
+if (disabled("ec")) {
+    $proxy->serverflags("-curves ffdhe3072");
+} else {
+    $proxy->serverflags("-curves P-256");
+}
 $proxy->filter(undef);
 $proxy->start();
 #Check if the PSK is present in the second ClientHello
@@ -81,11 +85,15 @@ ok($pskseen, "PSK hash matches");
 $proxy->clear();
 $proxy->clientflags("-sess_in ".$session);
 $proxy->filter(\&modify_psk_filter);
-$proxy->serverflags("-curves P-256");
-$proxy->cipherc("TLS13-AES-128-GCM-SHA256:TLS13-AES-256-GCM-SHA384");
-$proxy->ciphers("TLS13-AES-256-GCM-SHA384");
+if (disabled("ec")) {
+    $proxy->serverflags("-curves ffdhe3072");
+} else {
+    $proxy->serverflags("-curves P-256");
+}
+$proxy->ciphersuitesc("TLS_AES_128_GCM_SHA256:TLS_AES_256_GCM_SHA384");
+$proxy->ciphersuitess("TLS_AES_256_GCM_SHA384");
 #We force an early failure because TLS Proxy doesn't actually support
-#TLS13-AES-256-GCM-SHA384. That doesn't matter for this test though.
+#TLS_AES_256_GCM_SHA384. That doesn't matter for this test though.
 $testtype = ILLEGAL_EXT_SECOND_CH;
 $proxy->start();
 #Check if the PSK is present in the second ClientHello

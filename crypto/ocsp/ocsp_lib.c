@@ -1,7 +1,7 @@
 /*
  * Copyright 2000-2016 The OpenSSL Project Authors. All Rights Reserved.
  *
- * Licensed under the OpenSSL license (the "License").  You may not use
+ * Licensed under the Apache License 2.0 (the "License").  You may not use
  * this file except in compliance with the License.  You can obtain a copy
  * in the file LICENSE in the source distribution or at
  * https://www.openssl.org/source/license.html
@@ -14,7 +14,7 @@
 #include <openssl/pem.h>
 #include <openssl/x509v3.h>
 #include <openssl/ocsp.h>
-#include "ocsp_lcl.h"
+#include "ocsp_local.h"
 #include <openssl/asn1t.h>
 
 /* Convert a certificate and its issuer to an OCSP_CERTID */
@@ -88,7 +88,7 @@ OCSP_CERTID *OCSP_cert_id_new(const EVP_MD *dgst,
     return NULL;
 }
 
-int OCSP_id_issuer_cmp(OCSP_CERTID *a, OCSP_CERTID *b)
+int OCSP_id_issuer_cmp(const OCSP_CERTID *a, const OCSP_CERTID *b)
 {
     int ret;
     ret = OBJ_cmp(a->hashAlgorithm.algorithm, b->hashAlgorithm.algorithm);
@@ -100,7 +100,7 @@ int OCSP_id_issuer_cmp(OCSP_CERTID *a, OCSP_CERTID *b)
     return ASN1_OCTET_STRING_cmp(&a->issuerKeyHash, &b->issuerKeyHash);
 }
 
-int OCSP_id_cmp(OCSP_CERTID *a, OCSP_CERTID *b)
+int OCSP_id_cmp(const OCSP_CERTID *a, const OCSP_CERTID *b)
 {
     int ret;
     ret = OCSP_id_issuer_cmp(a, b);
@@ -132,8 +132,7 @@ int OCSP_parse_url(const char *url, char **phost, char **pport, char **ppath,
 
     /* Check for initial colon */
     p = strchr(buf, ':');
-
-    if (!p)
+    if (p == NULL)
         goto parse_err;
 
     *(p++) = '\0';
@@ -156,10 +155,8 @@ int OCSP_parse_url(const char *url, char **phost, char **pport, char **ppath,
     host = p;
 
     /* Check for trailing part of path */
-
     p = strchr(p, '/');
-
-    if (!p)
+    if (p == NULL)
         *ppath = OPENSSL_strdup("/");
     else {
         *ppath = OPENSSL_strdup(p);
@@ -167,7 +164,7 @@ int OCSP_parse_url(const char *url, char **phost, char **pport, char **ppath,
         *p = '\0';
     }
 
-    if (!*ppath)
+    if (*ppath == NULL)
         goto mem_err;
 
     p = host;
@@ -175,7 +172,7 @@ int OCSP_parse_url(const char *url, char **phost, char **pport, char **ppath,
         /* ipv6 literal */
         host++;
         p = strchr(host, ']');
-        if (!p)
+        if (p == NULL)
             goto parse_err;
         *p = '\0';
         p++;
@@ -188,12 +185,12 @@ int OCSP_parse_url(const char *url, char **phost, char **pport, char **ppath,
     }
 
     *pport = OPENSSL_strdup(port);
-    if (!*pport)
+    if (*pport == NULL)
         goto mem_err;
 
     *phost = OPENSSL_strdup(host);
 
-    if (!*phost)
+    if (*phost == NULL)
         goto mem_err;
 
     OPENSSL_free(buf);

@@ -1,7 +1,7 @@
 /*
- * Copyright 2005-2016 The OpenSSL Project Authors. All Rights Reserved.
+ * Copyright 2005-2018 The OpenSSL Project Authors. All Rights Reserved.
  *
- * Licensed under the OpenSSL license (the "License").  You may not use
+ * Licensed under the Apache License 2.0 (the "License").  You may not use
  * this file except in compliance with the License.  You can obtain a copy
  * in the file LICENSE in the source distribution or at
  * https://www.openssl.org/source/license.html
@@ -10,8 +10,8 @@
 #include <limits.h>
 #include <string.h>
 #include <stdio.h>
-#include "../ssl_locl.h"
-#include "statem_locl.h"
+#include "../ssl_local.h"
+#include "statem_local.h"
 #include "internal/cryptlib.h"
 #include <openssl/buffer.h>
 #include <openssl/objects.h>
@@ -59,13 +59,14 @@ static hm_fragment *dtls1_hm_fragment_new(size_t frag_len, int reassembly)
     unsigned char *buf = NULL;
     unsigned char *bitmask = NULL;
 
-    frag = OPENSSL_malloc(sizeof(*frag));
-    if (frag == NULL)
+    if ((frag = OPENSSL_malloc(sizeof(*frag))) == NULL) {
+        SSLerr(SSL_F_DTLS1_HM_FRAGMENT_NEW, ERR_R_MALLOC_FAILURE);
         return NULL;
+    }
 
     if (frag_len) {
-        buf = OPENSSL_malloc(frag_len);
-        if (buf == NULL) {
+        if ((buf = OPENSSL_malloc(frag_len)) == NULL) {
+            SSLerr(SSL_F_DTLS1_HM_FRAGMENT_NEW, ERR_R_MALLOC_FAILURE);
             OPENSSL_free(frag);
             return NULL;
         }
@@ -78,6 +79,7 @@ static hm_fragment *dtls1_hm_fragment_new(size_t frag_len, int reassembly)
     if (reassembly) {
         bitmask = OPENSSL_zalloc(RSMBLY_BITMASK_SIZE(frag_len));
         if (bitmask == NULL) {
+            SSLerr(SSL_F_DTLS1_HM_FRAGMENT_NEW, ERR_R_MALLOC_FAILURE);
             OPENSSL_free(buf);
             OPENSSL_free(frag);
             return NULL;
@@ -347,7 +349,7 @@ int dtls_get_message(SSL *s, int *mt, size_t *len)
         return 0;
     }
 
-    *mt = s->s3->tmp.message_type;
+    *mt = s->s3.tmp.message_type;
 
     p = (unsigned char *)s->init_buf->data;
     *len = s->init_num;
@@ -374,6 +376,15 @@ int dtls_get_message(SSL *s, int *mt, size_t *len)
     if (s->version != DTLS1_BAD_VER) {
         p -= DTLS1_HM_HEADER_LENGTH;
         msg_len += DTLS1_HM_HEADER_LENGTH;
+    }
+
+    /*
+     * If receiving Finished, record MAC of prior handshake messages for
+     * Finished verification.
+     */
+    if (*mt == SSL3_MT_FINISHED && !ssl3_take_mac(s)) {
+        /* SSLfatal() already called */
+        return 0;
     }
 
     if (!ssl3_finish_mac(s, p, msg_len))
@@ -431,9 +442,9 @@ static int dtls1_preprocess_fragment(SSL *s, struct hm_header_st *msg_hdr)
             return 0;
         }
 
-        s->s3->tmp.message_size = msg_len;
+        s->s3.tmp.message_size = msg_len;
         s->d1->r_msg_hdr.msg_len = msg_len;
-        s->s3->tmp.message_type = msg_hdr->type;
+        s->s3.tmp.message_type = msg_hdr->type;
         s->d1->r_msg_hdr.type = msg_hdr->type;
         s->d1->r_msg_hdr.seq = msg_hdr->seq;
     } else if (msg_len != s->d1->r_msg_hdr.msg_len) {
@@ -493,7 +504,7 @@ static int dtls1_retrieve_buffered_fragment(SSL *s, size_t *len)
         /* Calls SSLfatal() as required */
         ret = dtls1_preprocess_fragment(s, &frag->msg_header);
 
-        if (ret) {
+        if (ret && frag->msg_header.frag_len > 0) {
             unsigned char *p =
                 (unsigned char *)s->init_buf->data + DTLS1_HM_HEADER_LENGTH;
             memcpy(&p[frag->msg_header.frag_off], frag->fragment,
@@ -765,8 +776,8 @@ static int dtls_get_reassembled_message(SSL *s, int *errtype, size_t *len)
         memcpy(s->init_buf->data, wire, readbytes);
         s->init_num = readbytes - 1;
         s->init_msg = s->init_buf->data + 1;
-        s->s3->tmp.message_type = SSL3_MT_CHANGE_CIPHER_SPEC;
-        s->s3->tmp.message_size = readbytes - 1;
+        s->s3.tmp.message_type = SSL3_MT_CHANGE_CIPHER_SPEC;
+        s->s3.tmp.message_size = readbytes - 1;
         *len = readbytes - 1;
         return 1;
     }
@@ -891,7 +902,7 @@ static int dtls_get_reassembled_message(SSL *s, int *errtype, size_t *len)
  * for these 2 messages, we need to
  * ssl->enc_read_ctx                    re-init
  * ssl->rlayer.read_sequence            zero
- * ssl->s3->read_mac_secret             re-init
+ * ssl->s3.read_mac_secret             re-init
  * ssl->session->read_sym_enc           assign
  * ssl->session->read_compression       assign
  * ssl->session->read_hash              assign
@@ -913,9 +924,14 @@ int dtls_construct_change_cipher_spec(SSL *s, WPACKET *pkt)
 }
 
 #ifndef OPENSSL_NO_SCTP
+/*
+ * Wait for a dry event. Should only be called at a point in the handshake
+ * where we are not expecting any data from the peer except an alert.
+ */
 WORK_STATE dtls_wait_for_dry(SSL *s)
 {
-    int ret;
+    int ret, errtype;
+    size_t len;
 
     /* read app data until dry event */
     ret = BIO_dgram_sctp_wait_for_dry(SSL_get_wbio(s));
@@ -926,7 +942,20 @@ WORK_STATE dtls_wait_for_dry(SSL *s)
     }
 
     if (ret == 0) {
-        s->s3->in_read_app_data = 2;
+        /*
+         * We're not expecting any more messages from the peer at this point -
+         * but we could get an alert. If an alert is waiting then we will never
+         * return successfully. Therefore we attempt to read a message. This
+         * should never succeed but will process any waiting alerts.
+         */
+        if (dtls_get_reassembled_message(s, &errtype, &len)) {
+            /* The call succeeded! This should never happen */
+            SSLfatal(s, SSL_AD_UNEXPECTED_MESSAGE, SSL_F_DTLS_WAIT_FOR_DRY,
+                     SSL_R_UNEXPECTED_MESSAGE);
+            return WORK_ERROR;
+        }
+
+        s->s3.in_read_app_data = 2;
         s->rwstate = SSL_READING;
         BIO_clear_retry_flags(SSL_get_rbio(s));
         BIO_set_retry_read(SSL_get_rbio(s));

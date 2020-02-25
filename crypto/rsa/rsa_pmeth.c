@@ -1,11 +1,13 @@
 /*
- * Copyright 2006-2017 The OpenSSL Project Authors. All Rights Reserved.
+ * Copyright 2006-2019 The OpenSSL Project Authors. All Rights Reserved.
  *
- * Licensed under the OpenSSL license (the "License").  You may not use
+ * Licensed under the Apache License 2.0 (the "License").  You may not use
  * this file except in compliance with the License.  You can obtain a copy
  * in the file LICENSE in the source distribution or at
  * https://www.openssl.org/source/license.html
  */
+
+#include "internal/constant_time.h"
 
 #include <stdio.h>
 #include "internal/cryptlib.h"
@@ -16,8 +18,8 @@
 #include <openssl/evp.h>
 #include <openssl/x509v3.h>
 #include <openssl/cms.h>
-#include "internal/evp_int.h"
-#include "rsa_locl.h"
+#include "crypto/evp.h"
+#include "rsa_local.h"
 
 /* RSA pkey context structure */
 
@@ -54,7 +56,7 @@ static int pkey_rsa_init(EVP_PKEY_CTX *ctx)
 
     if (rctx == NULL)
         return 0;
-    rctx->nbits = 1024;
+    rctx->nbits = 2048;
     rctx->primes = RSA_DEFAULT_PRIME_NUM;
     if (pkey_ctx_is_pss(ctx))
         rctx->pad_mode = RSA_PKCS1_PSS_PADDING;
@@ -70,7 +72,7 @@ static int pkey_rsa_init(EVP_PKEY_CTX *ctx)
     return 1;
 }
 
-static int pkey_rsa_copy(EVP_PKEY_CTX *dst, EVP_PKEY_CTX *src)
+static int pkey_rsa_copy(EVP_PKEY_CTX *dst, const EVP_PKEY_CTX *src)
 {
     RSA_PKEY_CTX *dctx, *sctx;
 
@@ -87,6 +89,7 @@ static int pkey_rsa_copy(EVP_PKEY_CTX *dst, EVP_PKEY_CTX *src)
     dctx->pad_mode = sctx->pad_mode;
     dctx->md = sctx->md;
     dctx->mgf1md = sctx->mgf1md;
+    dctx->saltlen = sctx->saltlen;
     if (sctx->oaep_label) {
         OPENSSL_free(dctx->oaep_label);
         dctx->oaep_label = OPENSSL_memdup(sctx->oaep_label, sctx->oaep_labellen);
@@ -101,9 +104,10 @@ static int setup_tbuf(RSA_PKEY_CTX *ctx, EVP_PKEY_CTX *pk)
 {
     if (ctx->tbuf != NULL)
         return 1;
-    ctx->tbuf = OPENSSL_malloc(EVP_PKEY_size(pk->pkey));
-    if (ctx->tbuf == NULL)
+    if ((ctx->tbuf = OPENSSL_malloc(EVP_PKEY_size(pk->pkey))) == NULL) {
+        RSAerr(RSA_F_SETUP_TBUF, ERR_R_MALLOC_FAILURE);
         return 0;
+    }
     return 1;
 }
 
@@ -339,10 +343,9 @@ static int pkey_rsa_decrypt(EVP_PKEY_CTX *ctx,
         ret = RSA_private_decrypt(inlen, in, out, ctx->pkey->pkey.rsa,
                                   rctx->pad_mode);
     }
-    if (ret < 0)
-        return ret;
-    *outlen = ret;
-    return 1;
+    *outlen = constant_time_select_s(constant_time_msb_s(ret), *outlen, ret);
+    ret = constant_time_select_int(constant_time_msb(ret), ret, 1);
+    return ret;
 }
 
 static int check_padding_md(const EVP_MD *md, int padding)
@@ -459,7 +462,7 @@ static int pkey_rsa_ctrl(EVP_PKEY_CTX *ctx, int type, int p1, void *p2)
         return 1;
 
     case EVP_PKEY_CTRL_RSA_KEYGEN_BITS:
-        if (p1 < 512) {
+        if (p1 < RSA_MIN_MODULUS_BITS) {
             RSAerr(RSA_F_PKEY_RSA_CTRL, RSA_R_KEY_SIZE_TOO_SMALL);
             return -2;
         }
@@ -752,7 +755,7 @@ static int pkey_rsa_keygen(EVP_PKEY_CTX *ctx, EVP_PKEY *pkey)
     return ret;
 }
 
-const EVP_PKEY_METHOD rsa_pkey_meth = {
+static const EVP_PKEY_METHOD rsa_pkey_meth = {
     EVP_PKEY_RSA,
     EVP_PKEY_FLAG_AUTOARGLEN,
     pkey_rsa_init,
@@ -786,6 +789,11 @@ const EVP_PKEY_METHOD rsa_pkey_meth = {
     pkey_rsa_ctrl,
     pkey_rsa_ctrl_str
 };
+
+const EVP_PKEY_METHOD *rsa_pkey_method(void)
+{
+    return &rsa_pkey_meth;
+}
 
 /*
  * Called for PSS sign or verify initialisation: checks PSS parameter
@@ -834,7 +842,7 @@ static int pkey_pss_init(EVP_PKEY_CTX *ctx)
     return 1;
 }
 
-const EVP_PKEY_METHOD rsa_pss_pkey_meth = {
+static const EVP_PKEY_METHOD rsa_pss_pkey_meth = {
     EVP_PKEY_RSA_PSS,
     EVP_PKEY_FLAG_AUTOARGLEN,
     pkey_rsa_init,
@@ -857,3 +865,8 @@ const EVP_PKEY_METHOD rsa_pss_pkey_meth = {
     pkey_rsa_ctrl,
     pkey_rsa_ctrl_str
 };
+
+const EVP_PKEY_METHOD *rsa_pss_pkey_method(void)
+{
+    return &rsa_pss_pkey_meth;
+}

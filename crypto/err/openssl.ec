@@ -3,6 +3,7 @@
 # The INPUT HEADER is scanned for declarations
 # LIBNAME       INPUT HEADER                    ERROR-TABLE FILE
 L ERR           NONE                            NONE
+L FUNC          NONE                            NONE
 L BN            include/openssl/bn.h            crypto/bn/bn_err.c
 L RSA           include/openssl/rsa.h           crypto/rsa/rsa_err.c
 L DH            include/openssl/dh.h            crypto/dh/dh_err.c
@@ -19,7 +20,7 @@ L EC            include/openssl/ec.h            crypto/ec/ec_err.c
 L SSL           include/openssl/ssl.h           ssl/ssl_err.c
 L BIO           include/openssl/bio.h           crypto/bio/bio_err.c
 L PKCS7         include/openssl/pkcs7.h         crypto/pkcs7/pkcs7err.c
-L X509V3        include/openssl/x509v3.h        crypto/x509v3/v3err.c
+L X509V3        include/openssl/x509v3.h        crypto/x509/v3err.c
 L PKCS12        include/openssl/pkcs12.h        crypto/pkcs12/pk12err.c
 L RAND          include/openssl/rand.h          crypto/rand/rand_err.c
 L DSO           include/internal/dso.h          crypto/dso/dso_err.c
@@ -29,17 +30,24 @@ L UI            include/openssl/ui.h            crypto/ui/ui_err.c
 L COMP          include/openssl/comp.h          crypto/comp/comp_err.c
 L TS            include/openssl/ts.h            crypto/ts/ts_err.c
 L CMS           include/openssl/cms.h           crypto/cms/cms_err.c
+L CRMF          include/openssl/crmf.h          crypto/crmf/crmf_err.c
+L CMP           include/openssl/cmp.h           crypto/cmp/cmp_err.c
 L CT            include/openssl/ct.h            crypto/ct/ct_err.c
 L ASYNC         include/openssl/async.h         crypto/async/async_err.c
-L KDF           include/openssl/kdf.h           crypto/kdf/kdf_err.c
+L KDF           NONE                            crypto/kdf/kdf_err.c
+L SM2           include/crypto/sm2.h            crypto/sm2/sm2_err.c
 L OSSL_STORE    include/openssl/store.h         crypto/store/store_err.c
+L ESS           include/openssl/ess.h           crypto/ess/ess_err.c
+L PROP          include/internal/property.h     crypto/property/property_err.c
+L PROV          providers/common/include/prov/providercommon.h providers/common/provider_err.c
+L OSSL_SERIALIZER include/openssl/serializer.h  crypto/serializer/serializer_err.c
 
 # additional header files to be scanned for function names
 L NONE          include/openssl/x509_vfy.h      NONE
-L NONE          crypto/ec/ec_lcl.h              NONE
-L NONE          crypto/cms/cms_lcl.h            NONE
-L NONE          crypto/ct/ct_locl.h             NONE
-L NONE          ssl/ssl_locl.h                  NONE
+L NONE          crypto/ec/ec_local.h              NONE
+L NONE          crypto/cms/cms_local.h            NONE
+L NONE          crypto/ct/ct_local.h             NONE
+L NONE          ssl/ssl_local.h                  NONE
 
 # SSL/TLS alerts
 R SSL_R_SSLV3_ALERT_UNEXPECTED_MESSAGE          1010
@@ -66,10 +74,12 @@ R SSL_R_TLSV1_ALERT_INTERNAL_ERROR              1080
 R SSL_R_TLSV1_ALERT_INAPPROPRIATE_FALLBACK      1086
 R SSL_R_TLSV1_ALERT_USER_CANCELLED              1090
 R SSL_R_TLSV1_ALERT_NO_RENEGOTIATION            1100
+R SSL_R_TLSV13_ALERT_MISSING_EXTENSION          1109
 R SSL_R_TLSV1_UNSUPPORTED_EXTENSION             1110
 R SSL_R_TLSV1_CERTIFICATE_UNOBTAINABLE          1111
 R SSL_R_TLSV1_UNRECOGNIZED_NAME                 1112
 R SSL_R_TLSV1_BAD_CERTIFICATE_STATUS_RESPONSE   1113
 R SSL_R_TLSV1_BAD_CERTIFICATE_HASH_VALUE        1114
 R TLS1_AD_UNKNOWN_PSK_IDENTITY                  1115
+R SSL_R_TLSV13_ALERT_CERTIFICATE_REQUIRED       1116
 R TLS1_AD_NO_APPLICATION_PROTOCOL               1120

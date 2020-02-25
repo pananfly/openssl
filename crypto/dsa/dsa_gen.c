@@ -1,7 +1,7 @@
 /*
- * Copyright 1995-2016 The OpenSSL Project Authors. All Rights Reserved.
+ * Copyright 1995-2018 The OpenSSL Project Authors. All Rights Reserved.
  *
- * Licensed under the OpenSSL license (the "License").  You may not use
+ * Licensed under the Apache License 2.0 (the "License").  You may not use
  * this file except in compliance with the License.  You can obtain a copy
  * in the file LICENSE in the source distribution or at
  * https://www.openssl.org/source/license.html
@@ -21,7 +21,7 @@
 #include <openssl/bn.h>
 #include <openssl/rand.h>
 #include <openssl/sha.h>
-#include "dsa_locl.h"
+#include "dsa_local.h"
 
 int DSA_generate_parameters_ex(DSA *ret, int bits,
                                const unsigned char *seed_in, int seed_len,
@@ -64,9 +64,16 @@ int dsa_builtin_paramgen(DSA *ret, size_t bits, size_t qbits,
         /* invalid q size */
         return 0;
 
-    if (evpmd == NULL)
-        /* use SHA1 as default */
-        evpmd = EVP_sha1();
+    if (evpmd == NULL) {
+        if (qsize == SHA_DIGEST_LENGTH)
+            evpmd = EVP_sha1();
+        else if (qsize == SHA224_DIGEST_LENGTH)
+            evpmd = EVP_sha224();
+        else
+            evpmd = EVP_sha256();
+    } else {
+        qsize = EVP_MD_size(evpmd);
+    }
 
     if (bits < 512)
         bits = 512;
@@ -147,8 +154,7 @@ int dsa_builtin_paramgen(DSA *ret, size_t bits, size_t qbits,
                 goto err;
 
             /* step 4 */
-            r = BN_is_prime_fasttest_ex(q, DSS_prime_checks, ctx,
-                                        use_random_seed, cb);
+            r = BN_check_prime(q, ctx, cb);
             if (r > 0)
                 break;
             if (r != 0)
@@ -219,7 +225,7 @@ int dsa_builtin_paramgen(DSA *ret, size_t bits, size_t qbits,
             /* step 10 */
             if (BN_cmp(p, test) >= 0) {
                 /* step 11 */
-                r = BN_is_prime_fasttest_ex(p, DSS_prime_checks, ctx, 1, cb);
+                r = BN_check_prime(p, ctx, cb);
                 if (r > 0)
                     goto end;   /* found it */
                 if (r != 0)
@@ -274,6 +280,7 @@ int dsa_builtin_paramgen(DSA *ret, size_t bits, size_t qbits,
         ret->p = BN_dup(p);
         ret->q = BN_dup(q);
         ret->g = BN_dup(g);
+        ret->dirty_cnt++;
         if (ret->p == NULL || ret->q == NULL || ret->g == NULL) {
             ok = 0;
             goto err;
@@ -285,8 +292,7 @@ int dsa_builtin_paramgen(DSA *ret, size_t bits, size_t qbits,
         if (seed_out)
             memcpy(seed_out, seed, qsize);
     }
-    if (ctx)
-        BN_CTX_end(ctx);
+    BN_CTX_end(ctx);
     BN_CTX_free(ctx);
     BN_MONT_CTX_free(mont);
     return ok;
@@ -319,6 +325,12 @@ int dsa_builtin_paramgen2(DSA *ret, size_t L, size_t N,
 
     if (mctx == NULL)
         goto err;
+
+    /* make sure L > N, otherwise we'll get trapped in an infinite loop */
+    if (L <= N) {
+        DSAerr(DSA_F_DSA_BUILTIN_PARAMGEN2, DSA_R_INVALID_PARAMETERS);
+        goto err;
+    }
 
     if (evpmd == NULL) {
         if (N == 160)
@@ -412,8 +424,7 @@ int dsa_builtin_paramgen2(DSA *ret, size_t L, size_t N,
                 goto err;
 
             /* step 4 */
-            r = BN_is_prime_fasttest_ex(q, DSS_prime_checks, ctx,
-                                        seed_in ? 1 : 0, cb);
+            r = BN_check_prime(q, ctx, cb);
             if (r > 0)
                 break;
             if (r != 0)
@@ -493,7 +504,7 @@ int dsa_builtin_paramgen2(DSA *ret, size_t L, size_t N,
             /* step 10 */
             if (BN_cmp(p, test) >= 0) {
                 /* step 11 */
-                r = BN_is_prime_fasttest_ex(p, DSS_prime_checks, ctx, 1, cb);
+                r = BN_check_prime(p, ctx, cb);
                 if (r > 0)
                     goto end;   /* found it */
                 if (r != 0)
@@ -586,6 +597,7 @@ int dsa_builtin_paramgen2(DSA *ret, size_t L, size_t N,
             ok = -1;
             goto err;
         }
+        ret->dirty_cnt++;
         if (counter_ret != NULL)
             *counter_ret = counter;
         if (h_ret != NULL)
@@ -594,8 +606,7 @@ int dsa_builtin_paramgen2(DSA *ret, size_t L, size_t N,
     OPENSSL_free(seed);
     if (seed_out != seed_tmp)
         OPENSSL_free(seed_tmp);
-    if (ctx)
-        BN_CTX_end(ctx);
+    BN_CTX_end(ctx);
     BN_CTX_free(ctx);
     BN_MONT_CTX_free(mont);
     EVP_MD_CTX_free(mctx);

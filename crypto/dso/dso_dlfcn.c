@@ -1,7 +1,7 @@
 /*
- * Copyright 2000-2016 The OpenSSL Project Authors. All Rights Reserved.
+ * Copyright 2000-2018 The OpenSSL Project Authors. All Rights Reserved.
  *
- * Licensed under the OpenSSL license (the "License").  You may not use
+ * Licensed under the Apache License 2.0 (the "License").  You may not use
  * this file except in compliance with the License.  You can obtain a copy
  * in the file LICENSE in the source distribution or at
  * https://www.openssl.org/source/license.html
@@ -16,7 +16,8 @@
 # define _GNU_SOURCE            /* make sure dladdr is declared */
 #endif
 
-#include "dso_locl.h"
+#include "dso_local.h"
+#include "e_os.h"
 
 #ifdef DSO_DLFCN
 
@@ -26,8 +27,7 @@
 #  endif
 #  include <dlfcn.h>
 #  define HAVE_DLINFO 1
-#  if defined(_AIX) || defined(__CYGWIN__) || \
-     defined(__SCO_VERSION__) || defined(_SCO_ELF) || \
+#  if defined(__SCO_VERSION__) || defined(_SCO_ELF) || \
      (defined(__osf__) && !defined(RTLD_NEXT))     || \
      (defined(__OpenBSD__) && !defined(RTLD_SELF)) || \
         defined(__ANDROID__)
@@ -99,6 +99,7 @@ static int dlfcn_load(DSO *dso)
     /* See applicable comments in dso_dl.c */
     char *filename = DSO_convert_filename(dso, NULL);
     int flags = DLOPEN_FLAG;
+    int saveerrno = get_last_sys_error();
 
     if (filename == NULL) {
         DSOerr(DSO_F_DLFCN_LOAD, DSO_R_NO_FILENAME);
@@ -108,12 +109,21 @@ static int dlfcn_load(DSO *dso)
     if (dso->flags & DSO_FLAG_GLOBAL_SYMBOLS)
         flags |= RTLD_GLOBAL;
 # endif
+# ifdef _AIX
+    if (filename[strlen(filename) - 1] == ')')
+        flags |= RTLD_MEMBER;
+# endif
     ptr = dlopen(filename, flags);
     if (ptr == NULL) {
         DSOerr(DSO_F_DLFCN_LOAD, DSO_R_LOAD_FAILED);
         ERR_add_error_data(4, "filename(", filename, "): ", dlerror());
         goto err;
     }
+    /*
+     * Some dlopen() implementations (e.g. solaris) do no preserve errno, even
+     * on a successful call.
+     */
+    set_sys_error(saveerrno);
     if (!sk_void_push(dso->meth_data, (char *)ptr)) {
         DSOerr(DSO_F_DLFCN_LOAD, DSO_R_STACK_ERROR);
         goto err;
@@ -308,6 +318,91 @@ static int dladdr(void *address, Dl_info *dl)
 }
 # endif                         /* __sgi */
 
+# ifdef _AIX
+/*-
+ * See IBM's AIX Version 7.2, Technical Reference:
+ *  Base Operating System and Extensions, Volume 1 and 2
+ *  https://www.ibm.com/support/knowledgecenter/ssw_aix_72/com.ibm.aix.base/technicalreferences.htm
+ */
+#  include <sys/ldr.h>
+#  include <errno.h>
+/* ~ 64 * (sizeof(struct ld_info) + _XOPEN_PATH_MAX + _XOPEN_NAME_MAX) */
+#  define DLFCN_LDINFO_SIZE 86976
+typedef struct Dl_info {
+    const char *dli_fname;
+} Dl_info;
+/*
+ * This dladdr()-implementation will also find the ptrgl (Pointer Glue) virtual
+ * address of a function, which is just located in the DATA segment instead of
+ * the TEXT segment.
+ */
+static int dladdr(void *ptr, Dl_info *dl)
+{
+    uintptr_t addr = (uintptr_t)ptr;
+    unsigned int found = 0;
+    struct ld_info *ldinfos, *next_ldi, *this_ldi;
+
+    if ((ldinfos = OPENSSL_malloc(DLFCN_LDINFO_SIZE)) == NULL) {
+        errno = ENOMEM;
+        dl->dli_fname = NULL;
+        return 0;
+    }
+
+    if ((loadquery(L_GETINFO, (void *)ldinfos, DLFCN_LDINFO_SIZE)) < 0) {
+        /*-
+         * Error handling is done through errno and dlerror() reading errno:
+         *  ENOMEM (ldinfos buffer is too small),
+         *  EINVAL (invalid flags),
+         *  EFAULT (invalid ldinfos ptr)
+         */
+        OPENSSL_free((void *)ldinfos);
+        dl->dli_fname = NULL;
+        return 0;
+    }
+    next_ldi = ldinfos;
+
+    do {
+        this_ldi = next_ldi;
+        if (((addr >= (uintptr_t)this_ldi->ldinfo_textorg)
+             && (addr < ((uintptr_t)this_ldi->ldinfo_textorg +
+                         this_ldi->ldinfo_textsize)))
+            || ((addr >= (uintptr_t)this_ldi->ldinfo_dataorg)
+                && (addr < ((uintptr_t)this_ldi->ldinfo_dataorg +
+                            this_ldi->ldinfo_datasize)))) {
+            char *buffer, *member;
+            size_t buffer_sz, member_len;
+
+            buffer_sz = strlen(this_ldi->ldinfo_filename) + 1;
+            member = this_ldi->ldinfo_filename + buffer_sz;
+            if ((member_len = strlen(member)) > 0)
+                buffer_sz += 1 + member_len + 1;
+            found = 1;
+            if ((buffer = OPENSSL_malloc(buffer_sz)) != NULL) {
+                OPENSSL_strlcpy(buffer, this_ldi->ldinfo_filename, buffer_sz);
+                if (member_len > 0) {
+                    /*
+                     * Need to respect a possible member name and not just
+                     * returning the path name in this case. See docs:
+                     * sys/ldr.h, loadquery() and dlopen()/RTLD_MEMBER.
+                     */
+                    OPENSSL_strlcat(buffer, "(", buffer_sz);
+                    OPENSSL_strlcat(buffer, member, buffer_sz);
+                    OPENSSL_strlcat(buffer, ")", buffer_sz);
+                }
+                dl->dli_fname = buffer;
+            } else {
+                errno = ENOMEM;
+            }
+        } else {
+            next_ldi = (struct ld_info *)((uintptr_t)this_ldi +
+                                          this_ldi->ldinfo_next);
+        }
+    } while (this_ldi->ldinfo_next && !found);
+    OPENSSL_free((void *)ldinfos);
+    return (found && dl->dli_fname != NULL);
+}
+# endif                         /* _AIX */
+
 static int dlfcn_pathbyaddr(void *addr, char *path, int sz)
 {
 # ifdef HAVE_DLINFO
@@ -326,12 +421,19 @@ static int dlfcn_pathbyaddr(void *addr, char *path, int sz)
 
     if (dladdr(addr, &dli)) {
         len = (int)strlen(dli.dli_fname);
-        if (sz <= 0)
+        if (sz <= 0) {
+#  ifdef _AIX
+            OPENSSL_free((void *)dli.dli_fname);
+#  endif
             return len + 1;
+        }
         if (len >= sz)
             len = sz - 1;
         memcpy(path, dli.dli_fname, len);
         path[len++] = 0;
+#  ifdef _AIX
+        OPENSSL_free((void *)dli.dli_fname);
+#  endif
         return len;
     }
 

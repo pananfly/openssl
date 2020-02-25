@@ -1,7 +1,7 @@
 #! /usr/bin/env perl
-# Copyright 2017 The OpenSSL Project Authors. All Rights Reserved.
+# Copyright 2017-2018 The OpenSSL Project Authors. All Rights Reserved.
 #
-# Licensed under the OpenSSL license (the "License").  You may not use
+# Licensed under the Apache License 2.0 (the "License").  You may not use
 # this file except in compliance with the License.  You can obtain a copy
 # in the file LICENSE in the source distribution or at
 # https://www.openssl.org/source/license.html
@@ -15,7 +15,7 @@ my $test_name = "test_tls13cookie";
 setup($test_name);
 
 plan skip_all => "TLSProxy isn't usable on $^O"
-    if $^O =~ /^(VMS|MSWin32)$/;
+    if $^O =~ /^(VMS)$/;
 
 plan skip_all => "$test_name needs the dynamic engine feature enabled"
     if disabled("engine") || disabled("dynamic-engine");
@@ -46,17 +46,27 @@ my $testtype;
 #Test 1: Inserting a cookie into an HRR should see it echoed in the ClientHello
 $testtype = COOKIE_ONLY;
 $proxy->filter(\&cookie_filter);
-$proxy->serverflags("-curves X25519");
+$proxy->serverflags("-curves X25519") if !disabled("ec");
 $proxy->start() or plan skip_all => "Unable to start up Proxy for tests";
 plan tests => 2;
-ok(TLSProxy::Message->success() && $cookieseen == 1, "Cookie seen");
+SKIP: {
+    skip "EC disabled", 1, if disabled("ec");
+    ok(TLSProxy::Message->success() && $cookieseen == 1, "Cookie seen");
+}
+
+
 
 #Test 2: Same as test 1 but should also work where a new key_share is also
 #        required
 $testtype = COOKIE_AND_KEY_SHARE;
 $proxy->clear();
-$proxy->clientflags("-curves P-256:X25519");
-$proxy->serverflags("-curves X25519");
+if (disabled("ec")) {
+    $proxy->clientflags("-curves ffdhe3072:ffdhe2048");
+    $proxy->serverflags("-curves ffdhe2048");
+} else {
+    $proxy->clientflags("-curves P-256:X25519");
+    $proxy->serverflags("-curves X25519");
+}
 $proxy->start();
 ok(TLSProxy::Message->success() && $cookieseen == 1, "Cookie seen");
 
@@ -74,7 +84,7 @@ sub cookie_filter
         0x04, 0x05;
 
     foreach my $message (@{$proxy->message_list}) {
-        if ($message->mt == TLSProxy::Message::MT_HELLO_RETRY_REQUEST
+        if ($message->mt == TLSProxy::Message::MT_SERVER_HELLO
                 && ${$message->records}[0]->flight == 1) {
             $message->delete_extension(TLSProxy::Message::EXT_KEY_SHARE)
                 if ($testtype == COOKIE_ONLY);

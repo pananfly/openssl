@@ -1,7 +1,7 @@
 #! /usr/bin/env perl
-# Copyright 2012-2016 The OpenSSL Project Authors. All Rights Reserved.
+# Copyright 2012-2018 The OpenSSL Project Authors. All Rights Reserved.
 #
-# Licensed under the OpenSSL license (the "License").  You may not use
+# Licensed under the Apache License 2.0 (the "License").  You may not use
 # this file except in compliance with the License.  You can obtain a copy
 # in the file LICENSE in the source distribution or at
 # https://www.openssl.org/source/license.html
@@ -50,9 +50,10 @@
 # April-August 2013
 # Add CBC, CTR and XTS subroutines and adapt for kernel use; courtesy of Ard.
 
-$flavour = shift;
-if ($flavour=~/\w[\w\-]*\.\w+$/) { $output=$flavour; undef $flavour; }
-else { while (($output=shift) && ($output!~/\w[\w\-]*\.\w+$/)) {} }
+# $output is the last argument if it looks like a file (it has an extension)
+# $flavour is the first argument if it doesn't look like a file
+$output = $#ARGV >= 0 && $ARGV[$#ARGV] =~ m|\.\w+$| ? pop : undef;
+$flavour = $#ARGV >= 0 && $ARGV[0] !~ m|\.| ? shift : undef;
 
 if ($flavour && $flavour ne "void") {
     $0 =~ m/(.*[\/\\])[^\/\\]+$/; $dir=$1;
@@ -60,9 +61,10 @@ if ($flavour && $flavour ne "void") {
     ( $xlate="${dir}../../perlasm/arm-xlate.pl" and -f $xlate) or
     die "can't locate arm-xlate.pl";
 
-    open STDOUT,"| \"$^X\" $xlate $flavour $output";
+    open STDOUT,"| \"$^X\" $xlate $flavour \"$output\""
+        or die "can't call $xlate: $!";
 } else {
-    open STDOUT,">$output";
+    $output and open STDOUT,">$output";
 }
 
 my ($inp,$out,$len,$key)=("r0","r1","r2","r3");
@@ -728,7 +730,6 @@ $code.=<<___;
 .arch	armv7-a
 .fpu	neon
 
-.text
 .syntax	unified 	@ ARMv7-capable assembler is expected to handle this
 #if defined(__thumb2__) && !defined(__APPLE__)
 .thumb
@@ -737,12 +738,14 @@ $code.=<<___;
 # undef __thumb2__
 #endif
 
+.text
+
 .type	_bsaes_decrypt8,%function
 .align	4
 _bsaes_decrypt8:
 	adr	$const,.
 	vldmia	$key!, {@XMM[9]}		@ round 0 key
-#ifdef	__APPLE__
+#if defined(__thumb2__) || defined(__APPLE__)
 	adr	$const,.LM0ISR
 #else
 	add	$const,$const,#.LM0ISR-_bsaes_decrypt8
@@ -841,7 +844,7 @@ _bsaes_const:
 _bsaes_encrypt8:
 	adr	$const,.
 	vldmia	$key!, {@XMM[9]}		@ round 0 key
-#ifdef	__APPLE__
+#if defined(__thumb2__) || defined(__APPLE__)
 	adr	$const,.LM0SR
 #else
 	sub	$const,$const,#_bsaes_encrypt8-.LM0SR
@@ -949,7 +952,7 @@ $code.=<<___;
 _bsaes_key_convert:
 	adr	$const,.
 	vld1.8	{@XMM[7]},  [$inp]!		@ load round 0 key
-#ifdef	__APPLE__
+#if defined(__thumb2__) || defined(__APPLE__)
 	adr	$const,.LM0
 #else
 	sub	$const,$const,#_bsaes_key_convert-.LM0
@@ -1125,9 +1128,9 @@ bsaes_cbc_encrypt:
 #ifndef	__thumb__
 	blo	AES_cbc_encrypt
 #else
-	bhs	1f
+	bhs	.Lcbc_do_bsaes
 	b	AES_cbc_encrypt
-1:
+.Lcbc_do_bsaes:
 #endif
 #endif
 

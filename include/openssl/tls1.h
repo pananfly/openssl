@@ -1,16 +1,22 @@
 /*
- * Copyright 1995-2017 The OpenSSL Project Authors. All Rights Reserved.
+ * Copyright 1995-2018 The OpenSSL Project Authors. All Rights Reserved.
  * Copyright (c) 2002, Oracle and/or its affiliates. All rights reserved
  * Copyright 2005 Nokia. All rights reserved.
  *
- * Licensed under the OpenSSL license (the "License").  You may not use
+ * Licensed under the Apache License 2.0 (the "License").  You may not use
  * this file except in compliance with the License.  You can obtain a copy
  * in the file LICENSE in the source distribution or at
  * https://www.openssl.org/source/license.html
  */
 
-#ifndef HEADER_TLS1_H
-# define HEADER_TLS1_H
+#ifndef OPENSSL_TLS1_H
+# define OPENSSL_TLS1_H
+# pragma once
+
+# include <openssl/macros.h>
+# ifndef OPENSSL_NO_DEPRECATED_3_0
+#  define HEADER_TLS1_H
+# endif
 
 # include <openssl/buffer.h>
 # include <openssl/x509.h>
@@ -28,11 +34,9 @@ extern "C" {
 # define TLS1_1_VERSION                  0x0302
 # define TLS1_2_VERSION                  0x0303
 # define TLS1_3_VERSION                  0x0304
-# define TLS_MAX_VERSION                 TLS1_3_VERSION
-
-/* TODO(TLS1.3) REMOVE ME: Version indicator for draft -21 */
-# define TLS1_3_VERSION_DRAFT            0x7f15
-# define TLS1_3_VERSION_DRAFT_TXT        "TLS 1.3 (draft 21)"
+# ifndef OPENSSL_NO_DEPRECATED_3_0
+#  define TLS_MAX_VERSION                TLS1_3_VERSION
+# endif
 
 /* Special value for method supporting multiple versions */
 # define TLS_ANY_VERSION                 0x10000
@@ -66,7 +70,6 @@ extern "C" {
 # define TLS1_AD_USER_CANCELLED          90
 # define TLS1_AD_NO_RENEGOTIATION        100
 /* TLSv1.3 alerts */
-# define TLS13_AD_END_OF_EARLY_DATA      1
 # define TLS13_AD_MISSING_EXTENSION      109 /* fatal */
 # define TLS13_AD_CERTIFICATE_REQUIRED   116 /* fatal */
 /* codes 110-114 are from RFC3546 */
@@ -112,9 +115,6 @@ extern "C" {
 /* ExtensionType value from RFC5764 */
 # define TLSEXT_TYPE_use_srtp    14
 
-/* ExtensionType value from RFC5620 */
-# define TLSEXT_TYPE_heartbeat   15
-
 /* ExtensionType value from RFC7301 */
 # define TLSEXT_TYPE_application_layer_protocol_negotiation 16
 
@@ -140,13 +140,15 @@ extern "C" {
 # define TLSEXT_TYPE_session_ticket              35
 
 /* As defined for TLS1.3 */
-# define TLSEXT_TYPE_key_share                   40
 # define TLSEXT_TYPE_psk                         41
 # define TLSEXT_TYPE_early_data                  42
 # define TLSEXT_TYPE_supported_versions          43
 # define TLSEXT_TYPE_cookie                      44
 # define TLSEXT_TYPE_psk_kex_modes               45
 # define TLSEXT_TYPE_certificate_authorities     47
+# define TLSEXT_TYPE_post_handshake_auth         49
+# define TLSEXT_TYPE_signature_algorithms_cert   50
+# define TLSEXT_TYPE_key_share                   51
 
 /* Temporary extension type */
 # define TLSEXT_TYPE_renegotiate                 0xff01
@@ -230,7 +232,21 @@ __owur int SSL_export_keying_material(SSL *s, unsigned char *out, size_t olen,
                                       const unsigned char *context,
                                       size_t contextlen, int use_context);
 
+/*
+ * SSL_export_keying_material_early exports a value derived from the
+ * early exporter master secret, as specified in
+ * https://tools.ietf.org/html/draft-ietf-tls-tls13-23. It writes
+ * |olen| bytes to |out| given a label and optional context. It
+ * returns 1 on success and 0 otherwise.
+ */
+__owur int SSL_export_keying_material_early(SSL *s, unsigned char *out,
+                                            size_t olen, const char *label,
+                                            size_t llen,
+                                            const unsigned char *context,
+                                            size_t contextlen);
+
 int SSL_get_peer_signature_type_nid(const SSL *s, int *pnid);
+int SSL_get_signature_type_nid(const SSL *s, int *pnid);
 
 int SSL_get_sigalgs(SSL *s, int idx,
                     int *psign, int *phash, int *psignandhash,
@@ -314,35 +330,6 @@ __owur int SSL_check_chain(SSL *s, X509 *x, EVP_PKEY *pk, STACK_OF(X509) *chain)
 # define SSL_CTX_set_tlsext_ticket_key_cb(ssl, cb) \
         SSL_CTX_callback_ctrl(ssl,SSL_CTRL_SET_TLSEXT_TICKET_KEY_CB,\
                 (void (*)(void))cb)
-
-# ifndef OPENSSL_NO_HEARTBEATS
-#  define SSL_DTLSEXT_HB_ENABLED                   0x01
-#  define SSL_DTLSEXT_HB_DONT_SEND_REQUESTS        0x02
-#  define SSL_DTLSEXT_HB_DONT_RECV_REQUESTS        0x04
-#  define SSL_get_dtlsext_heartbeat_pending(ssl) \
-        SSL_ctrl(ssl,SSL_CTRL_GET_DTLS_EXT_HEARTBEAT_PENDING,0,NULL)
-#  define SSL_set_dtlsext_heartbeat_no_requests(ssl, arg) \
-        SSL_ctrl(ssl,SSL_CTRL_SET_DTLS_EXT_HEARTBEAT_NO_REQUESTS,arg,NULL)
-
-#  if OPENSSL_API_COMPAT < 0x10100000L
-#   define SSL_CTRL_TLS_EXT_SEND_HEARTBEAT \
-        SSL_CTRL_DTLS_EXT_SEND_HEARTBEAT
-#   define SSL_CTRL_GET_TLS_EXT_HEARTBEAT_PENDING \
-        SSL_CTRL_GET_DTLS_EXT_HEARTBEAT_PENDING
-#   define SSL_CTRL_SET_TLS_EXT_HEARTBEAT_NO_REQUESTS \
-        SSL_CTRL_SET_DTLS_EXT_HEARTBEAT_NO_REQUESTS
-#   define SSL_TLSEXT_HB_ENABLED \
-        SSL_DTLSEXT_HB_ENABLED
-#   define SSL_TLSEXT_HB_DONT_SEND_REQUESTS \
-        SSL_DTLSEXT_HB_DONT_SEND_REQUESTS
-#   define SSL_TLSEXT_HB_DONT_RECV_REQUESTS \
-        SSL_DTLSEXT_HB_DONT_RECV_REQUESTS
-#   define SSL_get_tlsext_heartbeat_pending(ssl) \
-        SSL_get_dtlsext_heartbeat_pending(ssl)
-#   define SSL_set_tlsext_heartbeat_no_requests(ssl, arg) \
-        SSL_set_dtlsext_heartbeat_no_requests(ssl,arg)
-#  endif
-# endif
 
 /* PSK ciphersuites from 4279 */
 # define TLS1_CK_PSK_WITH_RC4_128_SHA                    0x0300008A
@@ -1116,18 +1103,6 @@ __owur int SSL_check_chain(SSL *s, X509 *x, EVP_PKEY *pk, STACK_OF(X509) *chain)
 # define TLS1_TXT_RSA_PSK_WITH_ARIA_128_GCM_SHA256         "RSA-PSK-ARIA128-GCM-SHA256"
 # define TLS1_TXT_RSA_PSK_WITH_ARIA_256_GCM_SHA384         "RSA-PSK-ARIA256-GCM-SHA384"
 
-
-/* TLSv1.3 ciphersuites */
-/*
- * TODO(TLS1.3): Review the naming scheme for TLSv1.3 ciphers and also the
- * cipherstring selection process for these ciphers
- */
-# define TLS1_3_TXT_AES_128_GCM_SHA256                     "TLS13-AES-128-GCM-SHA256"
-# define TLS1_3_TXT_AES_256_GCM_SHA384                     "TLS13-AES-256-GCM-SHA384"
-# define TLS1_3_TXT_CHACHA20_POLY1305_SHA256               "TLS13-CHACHA20-POLY1305-SHA256"
-# define TLS1_3_TXT_AES_128_CCM_SHA256                     "TLS13-AES-128-CCM-SHA256"
-# define TLS1_3_TXT_AES_128_CCM_8_SHA256                   "TLS13-AES-128-CCM-8-SHA256"
-
 # define TLS_CT_RSA_SIGN                 1
 # define TLS_CT_DSS_SIGN                 2
 # define TLS_CT_RSA_FIXED_DH             3
@@ -1143,7 +1118,13 @@ __owur int SSL_check_chain(SSL *s, X509 *x, EVP_PKEY *pk, STACK_OF(X509) *chain)
  * when correcting this number, correct also SSL3_CT_NUMBER in ssl3.h (see
  * comment there)
  */
-# define TLS_CT_NUMBER                   9
+# define TLS_CT_NUMBER                   10
+
+# if defined(SSL3_CT_NUMBER)
+#  if TLS_CT_NUMBER != SSL3_CT_NUMBER
+#    error "SSL/TLS CT_NUMBER values do not match"
+#  endif
+# endif
 
 # define TLS1_FINISH_MAC_LENGTH          12
 
@@ -1217,7 +1198,7 @@ __owur int SSL_check_chain(SSL *s, X509 *x, EVP_PKEY *pk, STACK_OF(X509) *chain)
 /*
  * extended master secret
  */
-#  define TLS_MD_EXTENDED_MASTER_SECRET_CONST    "\x65\x78\x74\x65\x63\x64\x65\x64\x20\x6d\x61\x73\x74\x65\x72\x20\x73\x65\x63\x72\x65\x74"
+#  define TLS_MD_EXTENDED_MASTER_SECRET_CONST    "\x65\x78\x74\x65\x6e\x64\x65\x64\x20\x6d\x61\x73\x74\x65\x72\x20\x73\x65\x63\x72\x65\x74"
 # endif
 
 /* TLS Session Ticket extension struct */

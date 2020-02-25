@@ -1,7 +1,7 @@
 #! /usr/bin/env perl
-# Copyright 2004-2016 The OpenSSL Project Authors. All Rights Reserved.
+# Copyright 2004-2018 The OpenSSL Project Authors. All Rights Reserved.
 #
-# Licensed under the OpenSSL license (the "License").  You may not use
+# Licensed under the Apache License 2.0 (the "License").  You may not use
 # this file except in compliance with the License.  You can obtain a copy
 # in the file LICENSE in the source distribution or at
 # https://www.openssl.org/source/license.html
@@ -40,7 +40,7 @@
 #dsa  512 bits   0.0087s   0.0106s    114.3     94.5
 #dsa 1024 bits   0.0256s   0.0313s     39.0     32.0
 #
-#	Same bechmark with this assembler code:
+#	Same benchmark with this assembler code:
 #
 #rsa  512 bits   0.0056s   0.0005s    178.6   2049.2
 #rsa 1024 bits   0.0283s   0.0015s     35.3    674.1
@@ -103,7 +103,10 @@
 #        Performance increase of ~60%
 #        Based on submission from Suresh N. Chari of IBM
 
-$flavour = shift;
+# $output is the last argument if it looks like a file (it has an extension)
+# $flavour is the first argument if it doesn't look like a file
+$output = $#ARGV >= 0 && $ARGV[$#ARGV] =~ m|\.\w+$| ? pop : undef;
+$flavour = $#ARGV >= 0 && $ARGV[0] !~ m|\.| ? shift : undef;
 
 if ($flavour =~ /32/) {
 	$BITS=	32;
@@ -159,7 +162,8 @@ $0 =~ m/(.*[\/\\])[^\/\\]+$/; $dir=$1;
 ( $xlate="${dir}../../perlasm/ppc-xlate.pl" and -f $xlate) or
 die "can't locate ppc-xlate.pl";
 
-open STDOUT,"| $^X $xlate $flavour ".shift || die "can't call $xlate: $!";
+open STDOUT,"| $^X $xlate $flavour \"$output\""
+    or die "can't call $xlate: $!";
 
 $data=<<EOF;
 #--------------------------------------------------------------------
@@ -258,6 +262,7 @@ $data=<<EOF;
 # .text section
 
 	.machine	"any"
+	.text
 
 #
 #	NOTE:	The following label name should be changed to
